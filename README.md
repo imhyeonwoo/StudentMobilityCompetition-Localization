@@ -1,4 +1,4 @@
-# gps_imu_fusion_ihw
+# GPS and IMU Sensor Fusion
 
 ROS 2 package that fuses **GPS (7 Hz)** and **IMU (100 Hz)** using an Extended Kalman Filter (EKF) to output:
 
