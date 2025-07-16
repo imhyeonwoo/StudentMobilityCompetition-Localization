@@ -1,0 +1,38 @@
+imu_preproc:
+  ros__parameters:
+
+    # ===================== Input Frames =====================
+    imu_in_frame:  "os_imu"        # /ouster/imu 메시지 frame_id 기대값
+    body_out_frame: "gps_antenna"  # 출력 IMU를 이 body 프레임 기준으로 해석 (회전 적용 X면 의미적)
+
+    # ===================== Gyro =============================
+    gyro_bias_z:     0.0       # [rad/s] 수동 설정 초기 바이어스
+    auto_gyro_bias:  true      # 정지감지 시 자동 업데이트
+    gyro_bias_window_sec: 10.0 # [s] 이동 평균 길이
+    gyro_stationary_thr: 0.02  # [rad/s] 정지판정 임계
+
+    # ===================== Accel ============================
+    use_accel:       true
+    remove_gravity:  false      # msg.linear_acceleration already gravity-removed?
+    acc_bias_x:      0.0        # [m/s^2] 수동 오프셋
+    acc_bias_y:      0.0
+    auto_acc_bias:   true
+    acc_bias_window_sec: 10.0   # 정지 감지 중 평균 사용
+    acc_lpf_hz:      1.0        # [Hz] 1차 저역통과 컷오프
+    acc_deadband:    0.05       # [m/s^2] 소진동 클램프
+
+    # ===================== GPS 기반 초기 yaw =================
+    compute_initial_yaw: true
+    yaw_speed_thresh:    0.5    # [m/s] 이동속도 임계
+    yaw_window:          2      # 최근 N GPS 샘플 사용
+
+    # ===================== Topics ===========================
+    imu_in_topic:   "/ouster/imu"
+    gps_xy_topic:   "/local_xy"
+    imu_out_topic:  "/imu/processed"     # cleaned IMU
+    yaw_out_topic:  "/initial_yaw"       # latched 1회
+
+    # ===================== Debug ============================
+    debug_print:  true
+    debug_period: 0.5  # [s]
+
