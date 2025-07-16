@@ -16,13 +16,13 @@ Author(s): ihw
 - u-blox GNSS에서 제공하는 **/ublox_gps_node/fix (NavSatFix)**  
 
 중간 처리:  
-- 위경도 → 기준평면 변환(`gps_global_planner/gps_to_local_cartesian`)  
+- 위경도 → 기준평면 변환(`src/Planning/gps_global_planner/src/gps_to_local_cartesian.cpp`)  
 - IMU 신호 필터링/바이어스 제거(`imu_preproc_ihw`)  
 - 전처리된 신호 + GPS 위치를 이용한 확장 칼만 필터(`gps_imu_fusion_ihw`)
 
 출력:  
 - `/odometry/fusion` (nav_msgs/Odometry)  
-- `/global_yaw` (std_msgs/Float32, rad)  
+- `/global_yaw` (std_msgs/Float32, rad)(temp)
 - 선택적 TF 방송 (`reference` → `gps_antenna`)
 
 ---
@@ -514,15 +514,6 @@ Vector5d x0; x0 << gps_xy(0), gps_xy(1), 0.0, 0.0, yaw0;
 | 4 | Roll/Pitch 추정 + 중력 제거 | 가속도 정확도 향상 | ★★★★ |
 | 5 | 차량 Kinematics 모델(CV/CTRV) | 속도/요 결합 | ★★★ |
 | 6 | UKF / Error‑State EKF | 비선형성 향상 | ★★★★ |
-
----
-
-## 11. 개정 이력
-
-| 날짜 | 버전 | 작성자 | 변경 내용 |
-|---|---|---|---|
-| 2025‑07‑16 | 0.2 | ihw + ChatGPT | 전처리/튜닝/트러블슈팅 확장, yaw 기준 명확화. |
-| 2025‑07‑16 | 0.1 | ihw + ChatGPT | 최초 작성. |
 
 ---
 
