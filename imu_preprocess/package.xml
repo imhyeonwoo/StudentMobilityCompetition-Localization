@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>imu_preprocess</name>
+  <version>0.0.1</version>
+  <description>IMU preprocessing node (bias removal + low‑pass filter) for GPS/IMU fusion pipeline.</description>
+
+  <maintainer email="imhyeonwoo21@gmail.com">IH Woo</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- 빌드 도구 -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- 런타임/빌드 의존 -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <!-- 선택: 린트·테스트 -->
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
