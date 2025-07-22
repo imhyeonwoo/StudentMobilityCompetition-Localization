@@ -4,7 +4,7 @@
   <version>0.0.1</version>
   <description>IMU preprocessing node (bias removal + low‑pass filter) for GPS/IMU fusion pipeline.</description>
 
-  <maintainer email="imhyeonwoo21@gmail.com">IH Woo</maintainer>
+  <maintainer email="imhyeonwoo21@gmail.com">ihw</maintainer>
   <license>Apache-2.0</license>
 
   <!-- 빌드 도구 -->
