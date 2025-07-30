@@ -71,6 +71,14 @@ ament_target_dependencies(global_yaw_complementary_node
     rclcpp geometry_msgs sensor_msgs std_msgs)
 
 # ────────────────────────────────────────────────────
+# Executable: current_speed_node
+# ────────────────────────────────────────────────────
+add_executable(current_speed_node 
+    src/current_speed_node.cpp)
+ament_target_dependencies(current_speed_node
+    rclcpp geometry_msgs sensor_msgs std_msgs)
+
+# ────────────────────────────────────────────────────
 # Installation
 # ────────────────────────────────────────────────────
 # 1. libs & executables
@@ -79,6 +87,7 @@ install(TARGETS
   sensor_fusion_node
   global_yaw_integrator_node  # calculating global yaw - initial yaw from only GPS(using /local_xy), integrating yaw from IMU(w_z)
   global_yaw_complementary_node  # calculating global yaw - using complementary filter (GPS + IMU)
+  current_speed_node  # calculating current speed - using GPS and IMU
   DESTINATION lib/${PROJECT_NAME}
 )
 
