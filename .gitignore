@@ -1,48 +1,69 @@
-##################################
-# 1) Python 공통
-##################################
-# 바이트코드 / 캐시
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-
-# 빌드·배포 산출물
-build/
-dist/
-*.egg-info/
-*.egg
-
-# 가상환경
-# (당신의 venv_gui 폴더 등)
-.venv/
-venv*/
-env/
-ENV/
-
-##################################
-# 2) ROS2 (colcon) 빌드 산출물
-##################################
+# === ROS 2 build artifacts ===
 build/
 install/
 log/
 
-# Rosbag2 기록 파일 (용량 큼)
-*.db3
-# (ROS1이면 *.bag)
+# === Colcon workspace metadata ===
+.colcon/
+*.log
+*.pyc
+*.pyo
+__pycache__/
 
-##################################
-# 3) IDE · 편집기 설정
-##################################
+# === Python virtual environments ===
+.venv/
+venv/
+env/
+ENV/
+*.env
+*.env.*
+
+# === Python distribution folders ===
+dist/
+*.egg-info/
+
+# === CMake & C++ build artifacts ===
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# === VSCode ===
 .vscode/
-.idea/
-*.swp
-*~
+.history/
 
-##################################
-# 4) OS 및 기타 잡파일
-##################################
+# === CLion / JetBrains IDEs ===
+.idea/
+
+# === System Files ===
 .DS_Store
 Thumbs.db
-ehthumbs.db
-Desktop.ini
+
+# === ROS-specific files ===
+*.launch.py~
+*.launch~
+*.rviz~
+*.db3
+*.bag
+*.bag.active
+*.orig
+
+# === ROS 2 logs ===
+*.log
+*.trace
+.tracetools/
+tracetools_test/
+
+# === Test & coverage outputs ===
+test_results/
+coverage.xml
+*.lcov
+*.gcda
+*.gcno
+*.gcov
+
+# === Custom ===
+*.swp
+*.swo
+*.bak
+*.tmp
