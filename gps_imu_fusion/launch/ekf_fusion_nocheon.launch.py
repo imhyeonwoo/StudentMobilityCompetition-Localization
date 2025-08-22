@@ -107,76 +107,76 @@ def generate_launch_description():
         # Static transform: map -> odom (identity transform)
         # NOTE: Commented out when using cone_stellation SLAM, as SLAM manages map->odom transform
         # Uncomment this when running without SLAM
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='map_to_odom_tf',
-            output='screen',
-            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='map_to_odom_tf',
+        #     output='screen',
+        #     arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+        #     parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        # ),
         
         # Static transform: base_link -> os_sensor (Ouster LiDAR)
         # 30cm backward, 70cm upward from base_link
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='base_to_os_sensor',
-            output='screen',
-            arguments=[
-                LaunchConfiguration('os_sensor_x'),
-                LaunchConfiguration('os_sensor_y'), 
-                LaunchConfiguration('os_sensor_z'),
-                '0', '0', '0',  # No rotation (quaternion xyzw = 0,0,0,1)
-                'base_link', 'os_sensor'
-            ],
-            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='base_to_os_sensor',
+        #     output='screen',
+        #     arguments=[
+        #         LaunchConfiguration('os_sensor_x'),
+        #         LaunchConfiguration('os_sensor_y'), 
+        #         LaunchConfiguration('os_sensor_z'),
+        #         '0', '0', '0',  # No rotation (quaternion xyzw = 0,0,0,1)
+        #         'base_link', 'os_sensor'
+        #     ],
+        #     parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        # ),
         
         # Static transform: base_link -> gps (GPS antenna)
         # 50cm forward, 20cm upward from base_link
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='base_to_gps',
-            output='screen',
-            arguments=[
-                LaunchConfiguration('gps_x'),
-                LaunchConfiguration('gps_y'),
-                LaunchConfiguration('gps_z'),
-                '0', '0', '0',  # No rotation
-                'base_link', 'gps'
-            ],
-            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
-        ),
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='base_to_gps',
+        #     output='screen',
+        #     arguments=[
+        #         LaunchConfiguration('gps_x'),
+        #         LaunchConfiguration('gps_y'),
+        #         LaunchConfiguration('gps_z'),
+        #         '0', '0', '0',  # No rotation
+        #         'base_link', 'gps'
+        #     ],
+        #     parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        # ),
         
-        # Static transform: base_link -> imu_link (IMU sensor)
-        # Co-located with os_sensor: 30cm backward, 70cm upward
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='base_to_imu',
-            output='screen',
-            arguments=[
-                LaunchConfiguration('imu_x'),
-                LaunchConfiguration('imu_y'),
-                LaunchConfiguration('imu_z'),
-                '0', '0', '0',  # No rotation
-                'base_link', 'imu_link'
-            ],
-            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
-        ),
+        # # Static transform: base_link -> imu_link (IMU sensor)
+        # # Co-located with os_sensor: 30cm backward, 70cm upward
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='base_to_imu',
+        #     output='screen',
+        #     arguments=[
+        #         LaunchConfiguration('imu_x'),
+        #         LaunchConfiguration('imu_y'),
+        #         LaunchConfiguration('imu_z'),
+        #         '0', '0', '0',  # No rotation
+        #         'base_link', 'imu_link'
+        #     ],
+        #     parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        # ),
         
         # Cone frame transformer node
-        Node(
-            package='gps_imu_fusion',
-            executable='cone_frame_transformer.py',
-            name='cone_frame_transformer',
-            output='screen',
-            parameters=[{
-                'target_frame': 'map',
-                'timeout_sec': 0.1,
-                'use_sim_time': LaunchConfiguration('use_sim_time')
-            }]
-        ),
+        # Node(
+        #     package='gps_imu_fusion',
+        #     executable='cone_frame_transformer.py',
+        #     name='cone_frame_transformer',
+        #     output='screen',
+        #     parameters=[{
+        #         'target_frame': 'map',
+        #         'timeout_sec': 0.1,
+        #         'use_sim_time': LaunchConfiguration('use_sim_time')
+        #     }]
+        # ),
     ])

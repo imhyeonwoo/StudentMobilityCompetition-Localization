@@ -9,12 +9,35 @@ public:
   ImuPreprocessNode() : Node("imu_preprocess_node")
   {
     /* ---------- 파라미터 ---------- */
-    calib_duration_ = declare_parameter<double>("calib_duration", 20.0); // 정적 캘리브레이션 시간 [s]
-    lpf_cutoff_     = declare_parameter<double>("lpf_cutoff",    15.0);  // 1차 IIR LPF 컷오프 [Hz]
+    use_precalibrated_bias_ = declare_parameter<bool>("use_precalibrated_bias", false);
+    lpf_cutoff_ = declare_parameter<double>("lpf_cutoff", 15.0);  // 1차 IIR LPF 컷오프 [Hz]
+    
+    // Pre-calibrated bias parameters
+    if (use_precalibrated_bias_) {
+      bias_acc_[0] = declare_parameter<double>("bias_acc_x", 0.0);
+      bias_acc_[1] = declare_parameter<double>("bias_acc_y", 0.0);
+      bias_acc_[2] = declare_parameter<double>("bias_acc_z", 0.0);
+      bias_gyro_[0] = declare_parameter<double>("bias_gyro_x", 0.0);
+      bias_gyro_[1] = declare_parameter<double>("bias_gyro_y", 0.0);
+      bias_gyro_[2] = declare_parameter<double>("bias_gyro_z", 0.0);
+      
+      calibrated_ = true;  // Skip calibration phase
+      
+      RCLCPP_INFO(get_logger(),
+        "Using pre-calibrated IMU bias:\n"
+        "  acc  = [%.4f, %.4f, %.4f] m/s²\n"
+        "  gyro = [%.4f, %.4f, %.4f] rad/s",
+        bias_acc_[0], bias_acc_[1], bias_acc_[2],
+        bias_gyro_[0], bias_gyro_[1], bias_gyro_[2]);
+    } else {
+      // Only declare calib_duration if we're doing runtime calibration
+      calib_duration_ = declare_parameter<double>("calib_duration", 20.0);
+    }
 
     /* ---------- 토픽 I/O ---------- */
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-      "/imu/data", rclcpp::SensorDataQoS(),
+      // "/imu/data", rclcpp::SensorDataQoS(),
+      "/ouster/imu", rclcpp::SensorDataQoS(),
       std::bind(&ImuPreprocessNode::imuCallback, this, std::placeholders::_1));
 
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(
@@ -34,6 +57,7 @@ private:
 
     /* 1) 정적 캘리브레이션 단계 ------------------------- */
     if (!calibrated_) {
+      // This should only happen if use_precalibrated_bias_ is false
       accumulateBias(*msg);
       if ((now() - start_time_).seconds() >= calib_duration_) {
         finalizeBias();     // 편향 확정 + 로그 1회 출력
@@ -105,6 +129,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr     imu_pub_;
   rclcpp::Time start_time_, last_time_;
 
+  bool use_precalibrated_bias_;
   double calib_duration_;
   double lpf_cutoff_;
   bool calibrated_{false};

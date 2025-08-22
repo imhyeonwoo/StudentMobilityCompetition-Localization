@@ -54,7 +54,7 @@
        "/imu/processed", rclcpp::SensorDataQoS(),
        std::bind(&GlobalYawComplementary::imuCallback, this, std::placeholders::_1));
  
-     pub_yaw_ = create_publisher<std_msgs::msg::Float32>("/global_yaw", 10);
+     pub_yaw_ = create_publisher<std_msgs::msg::Float32>("/global_yaw/complementary", 10);
  
      RCLCPP_INFO(get_logger(), "global_yaw_complementary_node launched.");
    }

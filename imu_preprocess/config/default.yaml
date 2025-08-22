@@ -1,4 +1,0 @@
-imu_preprocess_node:
-  ros__parameters:
-    calib_duration: 20.0   # IMU 정지시 bias 누적 시간 [s]
-    lpf_cutoff:    20.0    # 0 으로 두면 LPF 비활성

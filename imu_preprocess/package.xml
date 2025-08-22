@@ -13,6 +13,8 @@
   <!-- 런타임/빌드 의존 -->
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>nlohmann-json-dev</depend>
+  <depend>ament_index_cpp</depend>
 
   <!-- 선택: 린트·테스트 -->
   <test_depend>ament_lint_auto</test_depend>
