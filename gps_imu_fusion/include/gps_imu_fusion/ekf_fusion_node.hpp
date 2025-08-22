@@ -101,6 +101,15 @@ private:
   float last_gps_heading_ = 0.0;  // GPS heading 저장용
   bool has_gnss_speed_ = false;
   
+  // 전환 상태 최소 유지 시간 관련
+  rclcpp::Time transition_state_start_;  // 전환 상태 진입 시간
+  double transition_min_hold_time_ = 1.0;  // 전환 상태 최소 유지 시간 (s)
+  bool in_transition_state_ = false;  // 전환 상태 플래그
+  
+  // 정지 상태 IMU 업데이트 decimation
+  int stationary_imu_skip_counter_ = 0;  // 정지 상태 IMU 스킵 카운터
+  int stationary_imu_decimation_factor_ = 10;  // 정지 상태에서 10번 중 1번만 업데이트
+  
   rclcpp::Time last_update_time_;
   
   void loadParameters();

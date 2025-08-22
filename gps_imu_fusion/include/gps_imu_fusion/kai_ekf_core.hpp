@@ -139,6 +139,8 @@ public:
   void gpsCoordinateUpdateEkf(const GpsCoordinate& coor);
   void gpsVelocityUpdateEkf(const GpsVelocity& vel);
   void setGpsHeading(float heading, bool valid);
+  // 동적으로 GPS heading 측정 표준편차를 설정 (R(6,6) = std^2)
+  void setGpsHeadingNoise(float stddev);
   void updateProcessNoiseMatrix();
   void resetCovarianceMatrix();
   

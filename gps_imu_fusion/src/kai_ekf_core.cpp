@@ -230,6 +230,15 @@ void KaiEkfCore::setGpsHeading(float heading, bool valid) {
   }
 }
 
+void KaiEkfCore::setGpsHeadingNoise(float stddev) {
+  std::unique_lock<std::shared_mutex> lock(shMutex);
+  // 표준편차를 직접 받아 R(6,6)에 분산으로 반영
+  float clipped = std::max(0.0f, std::min(stddev, 1e5f));
+  gps_heading_noise_ = clipped;
+  R(6,6) = clipped * clipped;
+  RCLCPP_DEBUG(rclcpp::get_logger("KaiEkfCore"), "GPS heading noise stddev 설정: %.6f (R66=%.6f)", clipped, R(6,6));
+}
+
 std::tuple<float,float,float> KaiEkfCore::getPitchRollYaw(float ax, float ay, float az, float hx, float hy, float hz) {
   // --- Pitch 계산 수정 ---
   float pitch_input = ax / GRAVITY;

@@ -43,46 +43,136 @@ EkfFusionNode::EkfFusionNode(const rclcpp::NodeOptions& options)
   RCLCPP_INFO(this->get_logger(), "Listening to IMU on: %s", imu_sub_->get_topic_name());
 }
 
+// C++
 void EkfFusionNode::loadParameters() {
+  // 1. 파라미터가 아직 선언되지 않은 경우에만 선언하도록 수정합니다.
   if (!this->has_parameter("world_frame_id")) {
-    RCLCPP_INFO(this->get_logger(), "Parameters not loaded from file, using defaults");
-    
-    this->declare_parameter("world_frame_id", "map");
-    this->declare_parameter("base_frame_id", "base_link");
-    this->declare_parameter("gnss_frame_id", "gps");
-    this->declare_parameter("imu_frame_id", "imu_link");
-    this->declare_parameter("update_rate", 50.0); 
-    this->declare_parameter("mag_declination", 0.0); 
-    this->declare_parameter("use_magnetic_declination", false);
-    this->declare_parameter("publish_tf", true);
-    this->declare_parameter("use_gnss_heading", true);
-    this->declare_parameter("min_speed_for_gnss_heading", 0.5);  
-  this->declare_parameter("zupt_speed_threshold", 0.15);
-  this->declare_parameter("zupt_noise_scale", 0.01);
-    this->declare_parameter("reference_altitude", 39.5);
-    // ZUPT IMU 기준 임계치
-    this->declare_parameter("zupt_gyro_threshold", 0.02);
-    this->declare_parameter("zupt_accel_threshold", 0.2);
-    this->declare_parameter("accel_noise", 0.05);
-    this->declare_parameter("gyro_noise", 0.00175);
-    this->declare_parameter("accel_bias_noise", 0.01);
-    this->declare_parameter("gyro_bias_noise", 0.00025);
-    this->declare_parameter("accel_bias_tau", 100.0);
-    this->declare_parameter("gyro_bias_tau", 50.0);
-    this->declare_parameter("gps_pos_noise_ne", 3.0);
-    this->declare_parameter("gps_pos_noise_d", 6.0);
-    this->declare_parameter("gps_vel_noise_ne", 0.5);
-    this->declare_parameter("gps_vel_noise_d", 1.0);
-    this->declare_parameter("init_pos_unc", 10.0);
-    this->declare_parameter("init_vel_unc", 1.0);
-    this->declare_parameter("init_att_unc", 0.34906);
-    this->declare_parameter("init_hdg_unc", 3.14159);
-    this->declare_parameter("init_accel_bias_unc", 0.981);
-    this->declare_parameter("init_gyro_bias_unc", 0.01745);
-  } else {
-    RCLCPP_INFO(this->get_logger(), "Parameters loaded from file");
+    this->declare_parameter<std::string>("world_frame_id", "map");
+  }
+  if (!this->has_parameter("base_frame_id")) {
+    this->declare_parameter<std::string>("base_frame_id", "base_link");
+  }
+  if (!this->has_parameter("gnss_frame_id")) {
+    this->declare_parameter<std::string>("gnss_frame_id", "gps");
+  }
+  if (!this->has_parameter("imu_frame_id")) {
+    this->declare_parameter<std::string>("imu_frame_id", "imu_link");
+  }
+  if (!this->has_parameter("update_rate")) {
+    this->declare_parameter<double>("update_rate", 50.0); 
+  }
+  if (!this->has_parameter("mag_declination")) {
+    this->declare_parameter<double>("mag_declination", 0.0); 
+  }
+  if (!this->has_parameter("use_magnetic_declination")) {
+    this->declare_parameter<bool>("use_magnetic_declination", false);
+  }
+  if (!this->has_parameter("publish_tf")) {
+    this->declare_parameter<bool>("publish_tf", true);
+  }
+  if (!this->has_parameter("use_gnss_heading")) {
+    this->declare_parameter<bool>("use_gnss_heading", true);
+  }
+  if (!this->has_parameter("min_speed_for_gnss_heading")) {
+    this->declare_parameter<double>("min_speed_for_gnss_heading", 0.5);  
+  }
+  if (!this->has_parameter("zupt_speed_threshold_low")) {
+    this->declare_parameter<double>("zupt_speed_threshold_low", 0.08);
+  }
+  if (!this->has_parameter("zupt_speed_threshold_high")) {
+    this->declare_parameter<double>("zupt_speed_threshold_high", 0.12);
+  }
+  if (!this->has_parameter("zupt_noise_scale_stationary")) {
+    this->declare_parameter<double>("zupt_noise_scale_stationary", 0.3);
+  }
+  if (!this->has_parameter("zupt_noise_scale_moving")) {
+    this->declare_parameter<double>("zupt_noise_scale_moving", 1.0);
+  }
+  if (!this->has_parameter("reference_altitude")) {
+    this->declare_parameter<double>("reference_altitude", 39.5);
+  }
+  if (!this->has_parameter("zupt_gyro_threshold")) {
+    this->declare_parameter<double>("zupt_gyro_threshold", 0.02);
+  }
+  if (!this->has_parameter("zupt_accel_threshold")) {
+    this->declare_parameter<double>("zupt_accel_threshold", 0.2);
+  }
+  if (!this->has_parameter("zupt_hold_time")) {
+    this->declare_parameter<double>("zupt_hold_time", 0.3);
+  }
+  if (!this->has_parameter("zupt_release_time")) {
+    this->declare_parameter<double>("zupt_release_time", 0.3);
+  }
+  if (!this->has_parameter("gps_heading_noise_low")) {
+    this->declare_parameter<double>("gps_heading_noise_low", 1000.0); // stddev ~무시
+  }
+  if (!this->has_parameter("gps_heading_noise_mid")) {
+    this->declare_parameter<double>("gps_heading_noise_mid", 0.03162); // stddev ~ sqrt(0.001)
+  }
+  if (!this->has_parameter("gps_heading_noise_high")) {
+    this->declare_parameter<double>("gps_heading_noise_high", 0.1); // stddev ~ sqrt(0.01)
+  }
+  if (!this->has_parameter("speed_threshold_mid")) {
+    this->declare_parameter<double>("speed_threshold_mid", 0.5);
+  }
+  if (!this->has_parameter("transition_min_hold_time")) {
+    this->declare_parameter<double>("transition_min_hold_time", 1.0);
+  }
+  if (!this->has_parameter("stationary_imu_decimation_factor")) {
+    this->declare_parameter<int>("stationary_imu_decimation_factor", 10);
+  }
+  // ... 이런 식으로 모든 파라미터에 if(!this->has_parameter(...)) 조건을 추가합니다 ...
+  if (!this->has_parameter("accel_noise")) {
+    this->declare_parameter<double>("accel_noise", 0.05);
+  }
+  if (!this->has_parameter("gyro_noise")) {
+    this->declare_parameter<double>("gyro_noise", 0.00175);
+  }
+  if (!this->has_parameter("accel_bias_noise")) {
+    this->declare_parameter<double>("accel_bias_noise", 0.01);
+  }
+  if (!this->has_parameter("gyro_bias_noise")) {
+    this->declare_parameter<double>("gyro_bias_noise", 0.00025);
+  }
+  if (!this->has_parameter("accel_bias_tau")) {
+    this->declare_parameter<double>("accel_bias_tau", 100.0);
+  }
+  if (!this->has_parameter("gyro_bias_tau")) {
+    this->declare_parameter<double>("gyro_bias_tau", 50.0);
+  }
+  if (!this->has_parameter("gps_pos_noise_ne")) {
+    this->declare_parameter<double>("gps_pos_noise_ne", 3.0);
+  }
+  if (!this->has_parameter("gps_pos_noise_d")) {
+    this->declare_parameter<double>("gps_pos_noise_d", 6.0);
+  }
+  if (!this->has_parameter("gps_vel_noise_ne")) {
+    this->declare_parameter<double>("gps_vel_noise_ne", 0.5);
+  }
+  if (!this->has_parameter("gps_vel_noise_d")) {
+    this->declare_parameter<double>("gps_vel_noise_d", 1.0);
+  }
+  if (!this->has_parameter("init_pos_unc")) {
+    this->declare_parameter<double>("init_pos_unc", 10.0);
+  }
+  if (!this->has_parameter("init_vel_unc")) {
+    this->declare_parameter<double>("init_vel_unc", 1.0);
+  }
+  if (!this->has_parameter("init_att_unc")) {
+    this->declare_parameter<double>("init_att_unc", 0.34906);
+  }
+  if (!this->has_parameter("init_hdg_unc")) {
+    this->declare_parameter<double>("init_hdg_unc", 3.14159);
+  }
+  if (!this->has_parameter("init_accel_bias_unc")) {
+    this->declare_parameter<double>("init_accel_bias_unc", 0.981);
+  }
+  if (!this->has_parameter("init_gyro_bias_unc")) {
+    this->declare_parameter<double>("init_gyro_bias_unc", 0.01745);
   }
   
+  // 2. 선언된 파라미터의 값을 가져와 멤버 변수에 할당합니다.
+  //    (yaml에 값이 있으면 그 값을, 없으면 위에서 선언한 기본값을 가져옵니다)
   world_frame_id_ = this->get_parameter("world_frame_id").as_string();
   base_frame_id_ = this->get_parameter("base_frame_id").as_string();
   gnss_frame_id_ = this->get_parameter("gnss_frame_id").as_string();
@@ -93,21 +183,40 @@ void EkfFusionNode::loadParameters() {
   publish_tf_ = this->get_parameter("publish_tf").as_bool();
   use_gnss_heading_ = this->get_parameter("use_gnss_heading").as_bool();
   min_speed_for_gnss_heading_ = this->get_parameter("min_speed_for_gnss_heading").as_double();
-  zupt_speed_threshold_ = this->get_parameter("zupt_speed_threshold").as_double();
-  zupt_noise_scale_ = this->get_parameter("zupt_noise_scale").as_double();
+  // Hysteresis thresholds
+  double zupt_thr_low = this->get_parameter("zupt_speed_threshold_low").as_double();
+  double zupt_thr_high = this->get_parameter("zupt_speed_threshold_high").as_double();
+  zupt_speed_threshold_ = zupt_thr_low; // keep member for logging
+  double zupt_noise_stationary = this->get_parameter("zupt_noise_scale_stationary").as_double();
+  double zupt_noise_moving = this->get_parameter("zupt_noise_scale_moving").as_double();
   reference_altitude_ = this->get_parameter("reference_altitude").as_double();
   zupt_gyro_threshold_ = this->get_parameter("zupt_gyro_threshold").as_double();
   zupt_accel_threshold_ = this->get_parameter("zupt_accel_threshold").as_double();
+  zupt_hold_time_ = this->get_parameter("zupt_hold_time").as_double();
+  zupt_release_time_ = this->get_parameter("zupt_release_time").as_double();
+  transition_min_hold_time_ = this->get_parameter("transition_min_hold_time").as_double();
+  stationary_imu_decimation_factor_ = this->get_parameter("stationary_imu_decimation_factor").as_int();
+  double gps_heading_noise_low = this->get_parameter("gps_heading_noise_low").as_double();
+  double gps_heading_noise_mid = this->get_parameter("gps_heading_noise_mid").as_double();
+  double gps_heading_noise_high = this->get_parameter("gps_heading_noise_high").as_double();
+  double speed_threshold_mid = this->get_parameter("speed_threshold_mid").as_double();
   
+  // 3. 파라미터 로딩 상태를 로깅합니다.
+  RCLCPP_INFO(this->get_logger(), "Parameters loaded successfully.");
   RCLCPP_INFO(this->get_logger(), "Update rate: %.1f Hz", update_rate_);
   RCLCPP_INFO(this->get_logger(), "Magnetic declination: %.2f deg (%s)", 
               this->get_parameter("mag_declination").as_double(),
               use_magnetic_declination_ ? "enabled" : "disabled");
-  RCLCPP_INFO(this->get_logger(), "GNSS heading: %s (min speed: %.1f m/s)", 
+  RCLCPP_INFO(this->get_logger(), "GNSS heading: %s (min speed: %.2f m/s)", 
               use_gnss_heading_ ? "enabled" : "disabled",
               min_speed_for_gnss_heading_);
-  RCLCPP_INFO(this->get_logger(), "ZUPT: threshold=%.2f m/s, noise_scale=%.3f, gyro_thr=%.3f rad/s, accel_thr=%.3f m/s^2", 
-              zupt_speed_threshold_, zupt_noise_scale_, zupt_gyro_threshold_, zupt_accel_threshold_);
+  RCLCPP_INFO(this->get_logger(), "ZUPT hysteresis: low=%.3f, high=%.3f m/s; hold=%.2fs, release=%.2fs; noise stationary=%.3f, moving=%.3f", 
+              zupt_thr_low, zupt_thr_high, zupt_hold_time_, zupt_release_time_,
+              zupt_noise_stationary, zupt_noise_moving);
+  RCLCPP_INFO(this->get_logger(), "GPS heading noise stddevs: low=%.5f, mid=%.5f, high=%.5f; mid speed thr=%.2f m/s", 
+              gps_heading_noise_low, gps_heading_noise_mid, gps_heading_noise_high, speed_threshold_mid);
+  RCLCPP_INFO(this->get_logger(), "Transition state min hold time: %.2f s", transition_min_hold_time_);
+  RCLCPP_INFO(this->get_logger(), "Stationary IMU decimation: 1/%d", stationary_imu_decimation_factor_);
   RCLCPP_INFO(this->get_logger(), "Reference altitude: %.1f m", reference_altitude_);
 }
 
@@ -238,33 +347,103 @@ void EkfFusionNode::gnssVelCallback(const geometry_msgs::msg::TwistWithCovarianc
                vel.vN, vel.vE, vel.vD);
   ekf_->gpsVelocityUpdateEkf(vel);
   
-  // GPS 속도로부터 heading 계산 및 설정
+  // GPS 속도 기반 상태 및 헤딩 융합 파이프라인 (히스테리시스 + 단계별 노이즈)
   double speed = std::sqrt(vel.vN * vel.vN + vel.vE * vel.vE);
   has_gnss_speed_ = true;
   last_speed_ = speed;
-  
-  // 0.08m/s 기준으로 ZUPT 및 GPS heading 제어
-  const double SPEED_THRESHOLD = 0.08;  // 0.08m/s 기준
-  
-  if (speed < SPEED_THRESHOLD) {
-    // 정지 상태: ZUPT 활성화하여 yaw drift 방지
-    ekf_->setStationary(true);
-    ekf_->setZuptNoiseScale(0.3f);  // 프로세스 노이즈 적당히 줄임 (너무 작으면 안됨)
-    ekf_->setGpsHeading(0.0f, false);  // GPS heading 사용 안 함
-    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                         "ZUPT ACTIVE: speed %.3f m/s < %.3f m/s, yaw update stopped", 
-                         speed, SPEED_THRESHOLD);
+
+  // 파라미터 캐싱
+  double zupt_thr_low = this->get_parameter("zupt_speed_threshold_low").as_double();
+  double zupt_thr_high = this->get_parameter("zupt_speed_threshold_high").as_double();
+  double zupt_noise_stationary = this->get_parameter("zupt_noise_scale_stationary").as_double();
+  double zupt_noise_moving = this->get_parameter("zupt_noise_scale_moving").as_double();
+  double speed_threshold_mid = this->get_parameter("speed_threshold_mid").as_double();
+  double gps_heading_noise_low = this->get_parameter("gps_heading_noise_low").as_double();
+  double gps_heading_noise_mid = this->get_parameter("gps_heading_noise_mid").as_double();
+  double gps_heading_noise_high = this->get_parameter("gps_heading_noise_high").as_double();
+
+  // 히스테리시스: 정지 유지/해제 시간 (IMU 정지 감지 OR 결합)
+  rclcpp::Time now = this->now();
+  bool should_stationary = stationary_latched_;
+  if (!stationary_latched_) {
+    // 이동 중 → 정지 전환 조건: (속도 < low) OR (IMU 정지 판단)
+    if (speed < zupt_thr_low || imu_stationary_flag_) {
+      if (stationary_candidate_start_.nanoseconds() == 0) {
+        stationary_candidate_start_ = now;
+      }
+      if ((now - stationary_candidate_start_).seconds() >= zupt_hold_time_) {
+        should_stationary = true;
+      }
+    } else {
+      stationary_candidate_start_ = rclcpp::Time();
+    }
   } else {
-    // 이동 상태: ZUPT 비활성화, GPS heading 사용
+    // 정지 중 → 이동 전환 조건: (속도 > high) AND (IMU 정지 아님)
+    if (speed > zupt_thr_high && !imu_stationary_flag_) {
+      if (moving_candidate_start_.nanoseconds() == 0) {
+        moving_candidate_start_ = now;
+      }
+      if ((now - moving_candidate_start_).seconds() >= zupt_release_time_) {
+        should_stationary = false;
+      }
+    } else {
+      moving_candidate_start_ = rclcpp::Time();
+    }
+  }
+
+  // 상태 변경 시 래치
+  if (should_stationary != stationary_latched_) {
+    stationary_latched_ = should_stationary;
+    RCLCPP_INFO(this->get_logger(), "ZUPT state changed: %s (speed=%.3f)", should_stationary ? "STATIONARY" : "MOVING", speed);
+  }
+
+  // EKF 제어 및 heading 노이즈 조절
+  if (stationary_latched_) {
+    ekf_->setStationary(true);
+    ekf_->setZuptNoiseScale((float)std::max(0.0, zupt_noise_stationary));
+    ekf_->setGpsHeading(0.0f, false);
+    ekf_->setGpsHeadingNoise((float)gps_heading_noise_low); // 사실상 무시 수준
+    in_transition_state_ = false;  // 정지 상태에서는 전환 상태 해제
+  } else {
     ekf_->setStationary(false);
-    ekf_->setZuptNoiseScale(1.0f);  // 프로세스 노이즈 원상복구
-    
+    ekf_->setZuptNoiseScale((float)std::max(0.0, zupt_noise_moving));
     if (use_gnss_heading_) {
-      float gps_heading = std::atan2(vel.vE, vel.vN);  // 북쪽 기준 heading
+      float gps_heading = std::atan2(vel.vE, vel.vN);
       ekf_->setGpsHeading(gps_heading, true);
-      last_gps_heading_ = gps_heading;  // GPS heading 저장
-      RCLCPP_DEBUG(this->get_logger(), "GPS heading set: %.2f rad (%.1f deg) from velocity [vN=%.2f, vE=%.2f], speed=%.2f m/s", 
-                   gps_heading, gps_heading * 180.0 / M_PI, vel.vN, vel.vE, speed);
+      last_gps_heading_ = gps_heading;
+      
+      // 전환 상태 최소 유지 시간 로직
+      bool should_be_in_transition = (speed < speed_threshold_mid);
+      
+      // 전환 상태 진입 감지
+      if (should_be_in_transition && !in_transition_state_) {
+        in_transition_state_ = true;
+        transition_state_start_ = now;
+        RCLCPP_INFO(this->get_logger(), "Entering transition state (speed=%.3f m/s)", speed);
+      }
+      
+      // 전환 상태 종료 조건: 속도가 threshold를 넘고, 최소 유지 시간도 경과
+      if (in_transition_state_ && !should_be_in_transition) {
+        double time_in_transition = (now - transition_state_start_).seconds();
+        if (time_in_transition >= transition_min_hold_time_) {
+          in_transition_state_ = false;
+          RCLCPP_INFO(this->get_logger(), "Exiting transition state after %.2f s (speed=%.3f m/s)", 
+                      time_in_transition, speed);
+        } else {
+          // 최소 시간이 지나지 않았으면 전환 상태 유지
+          RCLCPP_DEBUG(this->get_logger(), "Maintaining transition state (%.2f/%.2f s, speed=%.3f m/s)", 
+                       time_in_transition, transition_min_hold_time_, speed);
+        }
+      }
+      
+      // 전환 상태에 따른 노이즈 설정
+      if (in_transition_state_) {
+        ekf_->setGpsHeadingNoise((float)gps_heading_noise_mid);  // 전환 상태: GPS heading만 사용
+      } else {
+        ekf_->setGpsHeadingNoise((float)gps_heading_noise_high); // 주행 상태: GPS/IMU 균형
+      }
+    } else {
+      ekf_->setGpsHeading(0.0f, false);
     }
   }
   
@@ -334,10 +513,38 @@ void EkfFusionNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
   
   RCLCPP_DEBUG(this->get_logger(), "Updating EKF with IMU data, timestamp: %ld us", time_us);
   
-  // IMU 기반 정지 감지는 비활성화 - GPS 속도로만 판단
-  // (향후 필요시 OR 조건으로 추가 가능)
+  // IMU 기반 정지 감지: 자이로/가속도 임계값 기반
+  double gyro_norm = std::sqrt(
+      imu_data.gyroX * imu_data.gyroX +
+      imu_data.gyroY * imu_data.gyroY +
+      imu_data.gyroZ * imu_data.gyroZ);
+  double accel_norm = std::sqrt(
+      imu_data.accX * imu_data.accX +
+      imu_data.accY * imu_data.accY +
+      imu_data.accZ * imu_data.accZ);
+  double accel_dev = std::fabs(accel_norm - kai::GRAVITY);
+  imu_stationary_flag_ = (gyro_norm < zupt_gyro_threshold_) && (accel_dev < zupt_accel_threshold_);
   
-  ekf_->imuUpdateEkf(time_us, imu_data);
+  // 정지 상태에서 IMU 업데이트 decimation
+  bool should_update_imu = true;
+  if (stationary_latched_) {
+    // 정지 상태: 10번 중 1번만 업데이트
+    stationary_imu_skip_counter_++;
+    if (stationary_imu_skip_counter_ % stationary_imu_decimation_factor_ == 0) {
+      should_update_imu = true;
+      RCLCPP_DEBUG(this->get_logger(), "Stationary IMU update (1/%d)", stationary_imu_decimation_factor_);
+    } else {
+      should_update_imu = false;
+    }
+  } else {
+    // 이동/전환 상태: 항상 업데이트
+    stationary_imu_skip_counter_ = 0;
+    should_update_imu = true;
+  }
+  
+  if (should_update_imu) {
+    ekf_->imuUpdateEkf(time_us, imu_data);
+  }
   
   // IMU 공분산을 EKF에 전달
   std::array<double, 9> gyro_cov = {0};
@@ -448,14 +655,9 @@ void EkfFusionNode::publishOdometry() {
     latest_gnss_vel_.twist.twist.linear.x * latest_gnss_vel_.twist.twist.linear.x +
     latest_gnss_vel_.twist.twist.linear.y * latest_gnss_vel_.twist.twist.linear.y);
   
-  if (use_gnss_heading_ && gps_speed > 0.08) {
-    // 매번 최신 GPS 속도로부터 heading 계산 - main처럼 동작
-    heading = calculateCourse(latest_gnss_vel_.twist.twist.linear.x, latest_gnss_vel_.twist.twist.linear.y);
-    RCLCPP_DEBUG(this->get_logger(), "Using GNSS heading: %.2f rad from velocity data", heading);
-  } else {
-    heading = ekf_->getHeading_rad();
-    RCLCPP_DEBUG(this->get_logger(), "Using EKF estimated heading: %.2f rad", heading);
-  }
+  // 항상 EKF 추정 헤딩 사용 (출력단 오버라이드 제거)
+  heading = ekf_->getHeading_rad();
+  RCLCPP_DEBUG(this->get_logger(), "Using EKF estimated heading: %.2f rad", heading);
   
   RCLCPP_DEBUG(this->get_logger(), "Attitude: roll=%.2f, pitch=%.2f, heading=%.2f rad", roll, pitch, heading);
   
@@ -569,12 +771,8 @@ void EkfFusionNode::publishTransform() {
     latest_gnss_vel_.twist.twist.linear.x * latest_gnss_vel_.twist.twist.linear.x +
     latest_gnss_vel_.twist.twist.linear.y * latest_gnss_vel_.twist.twist.linear.y);
   
-  if (use_gnss_heading_ && gps_speed > 0.08) {
-    // 매번 최신 GPS 속도로부터 heading 계산 - main처럼 동작
-    heading = calculateCourse(latest_gnss_vel_.twist.twist.linear.x, latest_gnss_vel_.twist.twist.linear.y);
-  } else {
-    heading = ekf_->getHeading_rad();
-  }
+  // 항상 EKF 추정 헤딩 사용
+  heading = ekf_->getHeading_rad();
 
   // NaN 방지를 위해 roll, pitch, heading 값 확인 (안전장치로 유지)
   if (std::isnan(roll) || std::isnan(pitch) || std::isnan(heading)) {
