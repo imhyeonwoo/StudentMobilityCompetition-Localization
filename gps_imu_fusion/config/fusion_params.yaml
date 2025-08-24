@@ -4,7 +4,7 @@ ekf_fusion_node:
     world_frame_id: "odom"
     base_frame_id: "base_link"
     gnss_frame_id: "gps"
-    imu_frame_id: "imu_link"
+    imu_frame_id: "os_imu"
     
     # 일반 설정
     update_rate: 50.0       # EKF 업데이트 주기 (Hz)

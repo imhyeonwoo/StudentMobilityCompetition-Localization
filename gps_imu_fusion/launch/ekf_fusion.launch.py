@@ -1,8 +1,9 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 import os
 
 def generate_launch_description():
@@ -41,7 +42,7 @@ def generate_launch_description():
             description='Use simulation (Gazebo) clock if true'
         ),
         
-        # EKF Fusion Node
+        # EKF Fusion Node (발행: odom -> base_link 동적 TF)
         Node(
             package='gps_imu_fusion',
             executable='ekf_fusion_node',
@@ -61,12 +62,10 @@ def generate_launch_description():
             ]
         ),
         
-        # Static transform: map -> odom
-        # Node(
-        #     package='tf2_ros',
-        #     executable='static_transform_publisher',
-        #     name='map_to_odom_tf',
-        #     output='screen',
-        #     arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom']
-        # )
+        # Include static TFs (map->odom identity, base_link->sensors, optional map->reference)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                PathJoinSubstitution([FindPackageShare('gps_imu_fusion'), 'launch', 'tf_static.launch.py'])
+            ])
+        )
     ])
