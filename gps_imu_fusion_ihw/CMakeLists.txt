@@ -68,7 +68,7 @@ ament_target_dependencies(global_yaw_integrator_node
 add_executable(global_yaw_complementary_node
     src/global_yaw_complementary_node.cpp)
 ament_target_dependencies(global_yaw_complementary_node
-    rclcpp geometry_msgs sensor_msgs std_msgs)
+    rclcpp geometry_msgs sensor_msgs std_msgs nav_msgs tf2)
 
 # ────────────────────────────────────────────────────
 # Executable: current_speed_node
