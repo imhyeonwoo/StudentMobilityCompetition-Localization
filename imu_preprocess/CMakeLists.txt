@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.18)
 project(imu_preprocess)
 
 ##########  의존 패키지 찾기  ##########
