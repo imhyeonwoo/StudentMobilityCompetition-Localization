@@ -1,7 +1,7 @@
 imu_preprocess_node:
   ros__parameters:
     # Pre-calibrated IMU bias values
-    use_precalibrated_bias: true
+    use_precalibrated_bias: false
     
     # Accelerometer bias [m/s²]
     bias_acc_x: 0.06136

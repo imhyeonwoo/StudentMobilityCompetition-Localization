@@ -36,8 +36,8 @@ public:
 
     /* ---------- 토픽 I/O ---------- */
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-      // "/imu/data", rclcpp::SensorDataQoS(),
-      "/ouster/imu", rclcpp::SensorDataQoS(),
+      "/imu/data", rclcpp::SensorDataQoS(),
+      // "/ouster/imu", rclcpp::SensorDataQoS(),
       std::bind(&ImuPreprocessNode::imuCallback, this, std::placeholders::_1));
 
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(
