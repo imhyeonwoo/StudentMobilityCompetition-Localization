@@ -10,9 +10,9 @@ public:
   CurrentSpeedNode() : Node("current_speed_node")
   {
     /* ─ 파라미터 ─ */
-    v_min_       = declare_parameter<double>("v_min",       0.05);   // GPS 신뢰 최소속도 [m/s]
-    k_corr_      = declare_parameter<double>("k_corr",      0.2);  // GPS→IMU 보정 비율 0~1
-    gps_timeout_ = declare_parameter<double>("gps_timeout", 2.0);   // GPS 최신성 [s]
+    v_min_       = declare_parameter<double>("v_min",       0.4);   // GPS 신뢰 최소속도 [m/s]
+    k_corr_      = declare_parameter<double>("k_corr",      0.02);  // GPS→IMU 보정 비율 0~1
+    gps_timeout_ = declare_parameter<double>("gps_timeout", 0.5);   // GPS 최신성 [s]
 
     /* ─ 토픽 I/O ─ */
     sub_xy_ = create_subscription<geometry_msgs::msg::PointStamped>(
