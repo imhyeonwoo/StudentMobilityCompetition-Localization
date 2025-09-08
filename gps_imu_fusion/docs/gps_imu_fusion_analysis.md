@@ -1,288 +1,197 @@
-# GPS-IMU Fusion 패키지 분석 보고서 (2024.12 최신)
+# GPS-IMU Fusion 패키지 분석 보고서 (2025.08 최신)
 
-## 1. 현재 적용 상태
+## 1. 현재 구현 상태
 
-### 1.1 IMU Calibration 적용 현황
-- **미적용 상태**:
-  - `setImuCalibration()` 함수 존재하지 않음
-  - IMU calibration 파일 파라미터 정의만 되어있고 실제 사용 안 함 (ekf_fusion.launch.py:23-36줄)
-  - 가속도계 bias는 IMU 전처리 노드에서 처리된다고 주석 표시 (kai_ekf_core.cpp:356-357줄)
-  
-- **실제 구현**:
-  - 자이로 bias만 EKF에서 온라인 추정 (kai_ekf_core.cpp:84-86, 359-361줄)
-  - 초기값: gbx=0, gby=0, gbz=0
-  - Allan variance, scale factor, axis misalignment 모두 미구현
+### 1.1 핵심 기능 (구현 완료)
+- **15-state EKF**: 위치(3), 속도(3), 자세(3), 가속도 bias(3), 자이로 bias(3)
+- **ZUPT (Zero Velocity Update)**: 3단계 속도 기반 히스테리시스 적용
+- **GPS Heading 융합**: 속도별 동적 노이즈 조절로 GPS/IMU 균형 융합
+- **좌표계 변환**: UTM 변환 및 로컬 카르테시안 좌표계 구현
+- **스레드 안전성**: shared_mutex로 멀티스레드 환경 대응
 
-### 1.2 EKF 구현 상태
-- 15-state EKF (위치 3, 속도 3, 자세 3, 가속도 bias 3, 자이로 bias 3)
-- GPS 위치/속도와 IMU 데이터 융합
-- 프로세스 노이즈 및 측정 노이즈 모델링
+### 1.2 IMU Calibration 현황
+- 자이로 bias만 EKF에서 온라인 추정
+- 가속도계 bias는 전처리 단계에서 처리 가정
+- Allan variance, scale factor 등 고급 calibration 미구현
 
-## 2. 장단점 분석
+## 2. ZUPT 및 GPS Heading 융합 구현
 
-### 2.1 장점
-1. **커스터마이징 용이성**
-   - 소스 코드 직접 수정 가능
-   - 특정 센서 구성에 최적화 가능
-   - 추가 센서 통합 시 유연한 대응
-
-2. **단순한 의존성**
-   - robot_localization 패키지 불필요
-   - 최소한의 외부 라이브러리 사용 (Eigen, GeographicLib)
-
-3. **스레드 안전성 구현**
-   - shared_mutex를 통한 읽기/쓰기 동시성 제어
-   - getter는 shared_lock, setter는 unique_lock 사용
-
-### 2.2 단점
-
-#### Critical 이슈 (수정 완료/미완료)
-1. **Race Condition** ✅ 수정됨
-   - getter 함수에서 `std::shared_lock` 제대로 사용 중 (kai_ekf_core.hpp:73-101줄)
-   - setter 함수에서 `std::unique_lock` 사용 (kai_ekf_core.cpp:31,36,198줄 등)
-
-2. **수치적 불안정성** ⚠️ 부분 수정
-   - asin() 입력값 범위 제한 적용됨 (kai_ekf_core.cpp:235-252줄)
-   - 쿼터니언 NaN 체크 및 리셋 로직 있음 (kai_ekf_core.cpp:342-345줄)
-   - 하지만 Gimbal lock 회피 로직은 불완전
-
-3. **시간 동기화 부재** ❌ 미수정
-   - IMU와 GPS 타임스탬프 동기화 없음
-   - 센서 간 지연 시간 고려 안 함
-
-4. **비정상 dt 처리** ✅ 수정됨
-   - dt ≤ 0일 때 return으로 처리 (kai_ekf_core.cpp:123-125줄)
-
-#### High 이슈 (미수정)
-- 초기화 순서 문제 (GPS/GNSS velocity 모두 필요) ❌
-- Allan variance 데이터 미활용 ❌
-- IMU calibration JSON 파일 미사용 ❌
-- 오류 복구 메커니즘 부재 ❌
-
-## 3. 자동차 특화 구현
-- Roll/Pitch를 0으로 고정 (평지 주행 가정) - kai_ekf_core.cpp:90-92, 349-351줄
-- Z축 각속도(yaw rate)만 사용 - kai_ekf_core.cpp:374-380줄
-- 정지 모드 시 yaw rate 0 강제 - kai_ekf_core.cpp:377-378줄
-
-## 4. 파이프라인 통합 적합성
-
-### 4.1 현재 상태: ⚠️ **부분 적합**
-
-**해결된 문제**:
-1. 멀티스레딩 안전성 ✅ (shared_mutex 제대로 사용)
-2. 비정상 dt 처리 ✅
-
-**미해결 문제**:
-1. 시간 동기화 부재로 부정확한 상태 추정 ❌
-2. 오류 발생 시 복구 메커니즘 부재 ❌
-3. 좌표계 변환 문제 (아래 참조) ⚠️
-
-### 4.2 개선 필요사항
-1. ~~모든 getter 함수에 thread-safe 접근 구현~~ ✅ 완료
-2. 센서 타임스탬프 기반 동기화 ❌ 필요
-3. 공분산 행렬 체크 및 리셋 로직 ❌ 필요
-4. 좌표계 변환 명확화 ⚠️ 부분 문제
-
-## 5. 좌표계 문제 분석
-
-### 5.1 확인된 구현
-1. **TF 구조**
-   - 실제: odom → base_link만 발행 (ekf_fusion_node.cpp:652-653줄)
-   - map 프레임 미사용 (world_frame_id는 정의되어 있지만 TF 발행 안 함)
-   - 일반적인 ROS2 구조(map → odom → base_link)와 다름
-
-2. **원점 설정**
-   - 건국대 일감호 고정 원점 사용 (ekf_fusion_node.cpp:238-246줄)
-   - 참조점: lat=37.540091, lon=127.076555
-   - UTM 좌표계로 변환 후 상대 위치 계산
-
-### 5.2 잠재적 문제
-- map → odom 변환 부재로 전역 위치 보정 어려움
-- 고정 원점이므로 다른 지역에서 사용 시 수정 필요
-
-## 6. 권장사항
-
-### 6.1 단기 (테스트용)
-1. scripts의 GPS 변환 도구로 좌표계 문제 디버깅
-2. 간단한 시나리오에서 동작 확인
-3. 로그를 통한 문제점 파악
-
-### 6.2 장기 (프로덕션)
-   
-2. **현재 코드 유지 시**
-   - Critical 이슈 4개 즉시 수정
-   - 좌표계 변환 로직 재구현
-   - 포괄적인 테스트 스위트 작성
-
-## 7. 결론 (2024.12 업데이트)
-
-### 7.1 개선된 부분
-- 스레드 안전성 ✅ (mutex 제대로 구현)
-- dt 예외 처리 ✅
-- NaN 방지 로직 ✅
-- asin() 범위 제한 ✅
-
-### 7.2 주요 미해결 이슈
-- IMU calibration 파일 미사용 ❌
-- 시간 동기화 부재 ❌  
-- map → odom TF 미발행 ⚠️
-- 고정 원점 사용 (건국대 일감호) ⚠️
-
-### 7.3 종합 평가
-현재 구현은 기본적인 안전성 문제는 해결되었으나, IMU calibration 미적용과 시간 동기화 부재로 정밀도가 제한적입니다. 테스트 목적으로는 사용 가능하나 프로덕션 적용 시 추가 개선 필요합니다.
-
-
-
-## 8. Heading 융합 메커니즘 재분석 및 개선 방향 (2025.08.22. 업데이트)
-
-### 8.1 현재 구현 상태 (정확한 분석)
-
-#### 8.1.1 실제 동작 메커니즘
-1. **EKF 내부**:
-   - IMU 각속도 적분 로직 존재 (`kai_ekf_core.cpp:138`: `dq(3) = 0.5f * om_ib(2,0) * dt`)
-   - GPS heading과 EKF heading 간 잔차를 칼만필터로 융합
-   - R(6,6) 행렬로 GPS heading 가중치 제어
-
-2. **출력 단계 Override 문제**:
-   - `publishOdometry()`:513-520에서 EKF 결과를 무시하고 직접 계산
-   - 속도 ≥ 0.08 m/s: GPS 속도 벡터로 직접 heading 계산 (`atan2(vE, vN)`)
-   - 속도 < 0.08 m/s: EKF heading 사용 (하지만 GPS 노이즈로 불안정)
-
-### 8.2 핵심 문제점 재정의
-1. **정지 시 발산**: GPS 속도가 0에 가까울 때 `atan2(노이즈, 노이즈)`로 무작위 방향
-2. **이진 스위칭**: 0.08 m/s 경계에서 급격한 전환 (ON/OFF)
-3. **EKF 융합 무시**: 출력 단계에서 EKF 결과 대신 GPS 직접 사용
-
-### 8.3 속도 기반 3단계 융합 전략 (새로운 접근)
-
-#### 8.3.1 속도 영역 정의
-1. **저속 영역** (0 ~ 0.08 m/s): 
-   - IMU gyro만 사용
-   - GPS heading 완전 차단 (R = 1e10)
-   - atan2 발산 방지
-
-2. **전환 영역** (0.08 ~ 0.5 m/s):
-   - GPS heading 매우 강하게 신뢰 (R = 0.001)
-   - 빠른 참값 수렴 목적
-   - IMU 드리프트 보정
-
-3. **고속 영역** (> 0.5 m/s):
-   - GPS/IMU 적절한 융합 (R = 0.01)
-   - 8Hz 이상 부드러운 출력
-   - GPS 탁탁 튀는 현상 완화
-
-#### 8.3.2 핵심 파라미터 조절 메커니즘
-```cpp
-// R(6,6) 동적 조절 (측정 노이즈)
-if (speed < 0.08) {
-    R(6,6) = 1e10f;        // GPS heading 무시
-} else if (speed < 0.5) {
-    R(6,6) = 0.001f;       // GPS heading 매우 신뢰 (빠른 수렴)
-} else {
-    R(6,6) = 0.01f;        // 적절한 융합
-}
-
-// Q 행렬 조절 (프로세스 노이즈)
-if (stationary_mode_) {
-    Rw(5,5) *= 0.1f;       // gyro Z 노이즈 축소
-    Rw(11,11) *= 0.1f;     // gyro bias Z 노이즈 축소
-}
+### 2.1 3단계 속도 기반 융합 전략 (구현 완료)
+```
+┌─────────────┬──────────────┬────────────────┬──────────────────┐
+│    상태      │  속도 범위     │  GPS Heading   │   융합 전략        │
+├─────────────┼──────────────┼────────────────┼──────────────────┤
+│ 1. 정지      │ < 0.08 m/s   │ OFF (무시)      │ IMU only         │
+│             │              │ noise = 1000   │ Q scale = 0.1    │
+├─────────────┼──────────────┼────────────────┼──────────────────┤
+│ 2. 전환      │ 0.08~0.5 m/s │ 극히 높은 가중치  │ GPS heading 우선  │
+│   (저속)     │              │ noise = 0.001  │ Q scale = 1.0    │
+├─────────────┼──────────────┼────────────────┼──────────────────┤
+│ 3. 주행      │ > 0.5 m/s    │ 보통 가중치      │ GPS/IMU 균형      │
+│   (고속)     │              │ noise = 0.1    │ Q scale = 1.0    │
+└─────────────┴──────────────┴────────────────┴──────────────────┘
 ```
 
-### 8.4 구현 방안
+### 2.2 히스테리시스 적용
+- 정지→이동 전환: 0.12 m/s 이상, 0.3초 유지
+- 이동→정지 전환: 0.08 m/s 이하, 0.3초 유지
+- 전환 상태 최소 유지: 0.4초 (GPS heading 보정 시간 확보)
+- IMU 정지 감지와 OR 조건으로 결합
 
-#### 8.4.1 kai_ekf_core.cpp 수정
-```cpp
-// 새로운 함수 추가: 속도 기반 GPS heading 노이즈 동적 설정
-void KaiEkfCore::setGpsHeadingNoise(float speed) {
-    if (speed < 0.08f) {
-        R(6,6) = 1e10f;     // 저속: GPS heading 무시
-    } else if (speed < 0.5f) {
-        R(6,6) = 0.001f;    // 전환: GPS heading 강하게 신뢰
-    } else {
-        R(6,6) = 0.01f;     // 고속: 적절한 융합
-    }
-}
+## 3. 좌표계 및 TF 변환 구조
+
+### 3.1 현재 구현
+- **TF 발행**: odom → base_link (ekf_fusion_node.cpp:786-813)
+- **원점**: 건국대 일감호 고정 (37.540091, 127.076555)
+- **좌표 변환**: GPS → UTM → 로컬 카르테시안
+- **고도 처리**: `z = ekf_alt_m - reference_altitude_`
+
+### 3.2 Lever Arm 보정 ✅ 완료 (2025.08.27)
+- **GPS 안테나**: base_link에서 (0.5m, 0, 0.2m) 오프셋 → TF로 자동 보정
+- **IMU**: base_link에서 (-0.3m, 0, 0) 오프셋 → TF로 자동 보정
+- **구현 완료**: GPS position/velocity, IMU acceleration에 대한 lever arm dynamics 보정
+
+## 4. 해결된 문제들
+
+### 4.1 Critical 이슈 (✅ 해결)
+- **스레드 안전성**: shared_mutex 올바르게 구현
+- **비정상 dt 처리**: dt ≤ 0 시 스킵
+- **수치적 안정성**: asin() 범위 제한, 쿼터니언 NaN 체크
+- **ZUPT 구현**: 3단계 속도 기반 융합 완료
+- **GPS Heading 융합**: 동적 노이즈 조절 구현
+- **Lever Arm 보정**: GPS/IMU lever arm dynamics 완전 구현 (2025.08.27)
+
+## 5. 남아있는 문제
+
+### 5.1 High Priority
+- **시간 동기화 부재**: IMU와 GPS 타임스탬프 동기화 없음
+  - 상세 계획: [시간 동기화 구현 계획](./time_synchronization_plan.md) (예정)
+- **Lever arm 보정**: ✅ 완료 (2025.08.27)
+  - GPS position/velocity 및 IMU 가속도 lever arm 보정 구현 완료
+  - TF 방향 문제 및 프레임 불일치 수정 완료
+- **ZUPT 관련 문제**: 정지/이동 전환 시 불안정성 발생
+  - IMU 정지 감지와 GPS 속도 기반 판단 간 충돌
+  - 전환 상태(transition state) 로직 개선 필요
+  - 히스테리시스 파라미터 재조정 필요
+- **IMU calibration 미적용**: ~~JSON 파일 미사용~~ (해결됨)
+
+### 5.2 Medium Priority
+- **오류 복구 메커니즘 부재**: 센서 실패 시 대응 로직 없음
+- **초기화 순서 문제**: GPS/GNSS velocity 모두 필요
+- **map → odom TF 미발행**: SLAM 통합 시 필요
+
+## 6. Lever Arm 보정 구현 완료 (2025.08.27)
+
+### 6.1 구현된 보정 항목
+- ✅ **GPS position lever arm**: `p_base = p_gps - R_wb * t_bg`
+- ✅ **GPS velocity lever arm**: `v_base = v_gps - ω × (R_wb * t_bg)`  
+- ✅ **IMU acceleration lever arm**: `a_base = a_imu - α×r - ω×(ω×r)`
+- ✅ **TF 방향 수정**: `lookupTransform("base_link", source)` 형식으로 통일
+- ✅ **프레임 일치 보장**: gnssVelCallback에서 base frame 각속도 사용
+
+### 6.2 미구현 항목
+- **고도 오프셋**: base_link 지면 높이(0.235m) 미적용
+- **Higher-order terms**: 큰 lever arm(>0.5m)에 대한 고차항 미고려
+
+
+
+## 7. 결론
+
+### 7.1 현재 상태 요약
+- **기본 기능 구현 완료**: EKF, ZUPT, GPS heading 융합
+- **스레드 안전성 확보**: mutex 올바르게 구현
+- **자동차 특화**: 평지 주행 가정, yaw rate 중심
+
+### 7.2 주요 개선 필요사항
+1. **ZUPT 안정성 개선**: 정지/이동 전환 시 불안정성 해결 필요
+2. **시간 동기화**: 센서 간 타임스탬프 동기화
+3. **고도 오프셋 추가**: 타이어 반지름 고려
+4. **오류 복구**: 센서 실패 시 graceful degradation
+
+### 7.3 평가
+테스트 및 개발 목적으로 충분히 사용 가능한 상태. Lever arm 보정 완료로 정확도가 크게 향상됨. ZUPT 안정성 개선과 시간 동기화가 추가되면 프로덕션 수준 도달 가능.
+
+
+## 8. 지연/시간정렬 분석 및 대응
+
+### 8.1 왜 GPS-only보다 ‘뒤로’ 보이나
+- 지연된 GPS를 현재에 바로 섞음: GPS가 측정→도착까지 100~200ms 지연되는 것이 일반적이며, 이를 과거 시각으로 되감지 않고 현재 상태에 바로 섞으면 추정이 과거 방향으로 당겨짐(뒤처져 보임).
+- publish 시 ‘현재까지 예측(predict-to-now)’ 부족: 출력 시각까지 추가 예측이 없으면 출력 자체가 늦어짐(양자화 지연 포함).
+- 프레임/스탬프/큐 정렬 문제: TF 시간 오프셋, 토픽 큐 지연, 센서 클럭 불일치 등도 동일한 효과를 유발.
+
+코드 관점 핵심 포인트
+- 현재 구현은 IMU 콜백마다 EKF 업데이트가 돌며, 그때 사용되는 GPS 측정은 “직전 GNSS 콜백에서 저장된 값”입니다. 새 GPS가 오기 전까지 같은 측정이 반복 적용되어 현재를 과거로 끌 수 있습니다.
+  - IMU 경로에서 EKF 호출: `INS/gps_imu_fusion/src/kai_ekf_core.cpp:197`
+  - EKF 내부에서 마지막 GPS 좌표/속도를 매 스텝 측정으로 사용: `INS/gps_imu_fusion/src/kai_ekf_core.cpp:170`, `:174`, `:283`
+
+### 8.2 정량화(간단 모델)
+- 기호: v=속도, L_gps=GPS 총 지연(측정→퓨전), T_pub=퍼블리시 주기, α=GPS 위치 칼만 이득(0~1).
+- 평균 위치 오프셋 근사: Δx ≈ v · ( α·L_gps + T_pub/2 )
+  - α·L_gps: 지연된 GPS를 현재에 섞어 생기는 당김(뒤로 끌림)
+  - T_pub/2: 퍼블리시 양자화 평균 지연
+- 예시(8 Hz GPS=125ms, 50 Hz publish=20ms):
+  - v=5 m/s, α=0.5 → Δx≈5·(0.5·0.125+0.01)=≈0.375 m(평균)
+  - v=10 m/s, α=0.4~0.8 → ≈0.25~0.75 m(평균), 최대는 α·L_gps 항 기준 ≈0.05~0.10 s×v
+
+타임라인(예: GPS 8 Hz, IMU 100 Hz, Odom 50 Hz)
 ```
+시간(ms):  0         50        100        150        200        250
+           |---------|---------|----------|----------|----------|
 
-#### 8.4.2 ekf_fusion_node.cpp 수정
-```cpp
-void EkfFusionNode::gnssVelCallback(...) {
-    // 속도별 3단계 처리
-    if (speed < 0.08) {
-        ekf_->setStationary(true);
-        ekf_->setZuptNoiseScale(0.1f);
-        ekf_->setGpsHeading(0.0f, false);
-    } else if (speed < 0.5) {
-        ekf_->setStationary(false);
-        ekf_->setZuptNoiseScale(1.0f);
-        float gps_heading = std::atan2(vel.vE, vel.vN);
-        ekf_->setGpsHeading(gps_heading, true);
-        ekf_->setGpsHeadingNoise(speed);  // 전환 영역 특별 처리
-    } else {
-        // 고속 영역 - 기존과 동일
-        ekf_->setGpsHeadingNoise(speed);  // 융합 모드
-    }
-}
+IMU(100):   • • • • • • • • • • • • • • • • • • • • • • • • •
+PREDICT:    P P P P P P P P P P P P P P P P P P P P P P P P P
 
-// publishOdometry()에서 EKF 결과 직접 사용하도록 수정
-void EkfFusionNode::publishOdometry() {
-    float heading = ekf_->getHeading_rad();  // 항상 EKF 결과 사용
-    // GPS 직접 계산 제거
-}
+ODOM(50):     ▮    ▮    ▮    ▮    ▮    ▮    ▮    ▮    ▮    ▮
+
+GPS(8):     G____________________________G____________________
+UPDATE:     U____________________________U____________________
 ```
+— 이상적으로는 publish 직전에 현재 시각까지 예측해 내보내야 함.
 
-### 8.5 config/fusion_params.yaml 제안 수정
-```yaml
-# 속도 영역 임계값 (새로 추가)
-speed_threshold_low: 0.08        # 저속/전환 경계 (m/s)
-speed_threshold_high: 0.5        # 전환/고속 경계 (m/s)
+### 8.3 대응 옵션(현실적 → 정석)
+- A) 측정 게이팅(추천/간단)
+  - 새 GPS가 올 때만 위치/속도 측정 업데이트를 적용. 그 사이 IMU 예측은 고주사율로 계속.
+  - 구현 아이디어: “신규 GPS 도착 플래그”가 없으면 H의 pos/vel 행을 비활성화하거나 R를 크게 키워 사실상 무시.
+  - 장점: 지연된 GPS를 반복 재사용해 현재를 끌어내리는 문제 제거. 구현 간단.
+- B) GPS 외삽(extrapolation to now)
+  - z_now ≈ z_last + v_gps · (t_now − t_gps)로 “현재 시각 측정”을 생성해 업데이트.
+  - 장점: α·L_gps 항을 크게 줄임. 버퍼 없이도 체감 지연 대폭 감소.
+  - 주의: 좌표계 일관성(ENU↔NED), UTM 변환, 속도 프레임 정합 필요.
+- C) 정석: 상태 버퍼링 + 소급 업데이트(retroactive) + 현재로 재전개(repropagate)
+  - robot_localization류 구현. GPS 도착 시 해당 타임스탬프로 과거 상태에 업데이트 후 현재까지 IMU로 재적분.
+  - 장점: 지연 보상을 가장 정확히 처리. 단, 구현 복잡도↑(상태 버퍼, 재전분, 시간 관리).
 
-# GPS heading 노이즈 (속도별)
-gps_heading_noise_low: 1e10      # 저속 영역 (사실상 무시)
-gps_heading_noise_mid: 0.001     # 전환 영역 (매우 신뢰)
-gps_heading_noise_high: 0.01     # 고속 영역 (적절한 융합)
+### 8.4 레포 기준 구현 포인트(권장 순서)
+1) 측정 게이팅 추가
+   - “신규 GNSS 수신” 플래그가 없으면 EKF 위치/속도 측정 항을 비활성화(예: H 행 0 또는 R 매우 크게)하여 IMU 예측만 진행.
+2) publish 직전 predict-to-now
+   - 마지막 EKF 상태 시각→publish 시각(now)까지 소규모 예측 적용. 잔여 수 ms라도 양자화 지연을 줄임.
+3) 외삽 옵션(선택)
+   - z_now를 만들어 업데이트. 버퍼 없이도 체감 지연이 크게 개선됨.
+4) 정석 구현(선택)
+   - 상태 히스토리 버퍼 구축, 과거시각 업데이트 + 재전개.
 
-# ZUPT 관련 (기존)
-zupt_speed_threshold: 0.08       # ZUPT 활성화 속도
-zupt_noise_scale: 0.1            # 정지 시 프로세스 노이즈 스케일
+### 8.5 튜닝으로 α 낮추기(즉효)
+- GPS 위치 노이즈(R)를 완화하여 α(K_pos)를 낮춤.
+  - `fusion_params.yaml`에서 `gps_pos_noise_ne`/`gps_pos_noise_d`를 0.5~1.0 m 수준으로 상향(또는 실제 메시지 공분산을 신뢰).
+  - 과도한 상향은 추적성 저하를 유발하므로 도로/환경에 맞게 조정.
+- IMU Q를 상황에 맞게 조정하여 예측 영향도 균형화.
 
-# 기존 파라미터
-use_gnss_heading: true            # GNSS heading 사용 여부
-```
+관련 파라미터 위치
+- `INS/gps_imu_fusion/config/fusion_params.yaml:196`(gps_pos_noise_ne), `:197`(gps_pos_noise_d)
 
-### 8.6 기대 효과
-1. **정지 시**: IMU gyro만 사용하여 atan2 발산 방지
-2. **전환 영역**: GPS heading 강하게 신뢰하여 빠른 참값 수렴
-3. **고속 주행**: GPS/IMU 적절한 융합으로 부드러운 출력
+### 8.6 검증 루틴(실전)
+- L_gps 추정: 로그에서 `header.stamp`와 수신 시각의 차이를 모아 평균·분산 산출.
+- 경로 기반 지연 추정: 거리 시계열 s(t)를 만들고 EKF vs GPS의 상호상관 최대점에서 시간 시프트를 구함(평균 지연 추정).
+- 오프셋→α 역산: Δx/(v·(T_gps/2)) ≈ α 근사(등속 구간).
+- rosbag 기반 재현: 동일 데이터로 파라미터/옵션별 비교.
 
-### 8.7 테스트 시나리오
-1. **정지 → 가속 → 정지**
-   - 정지 10초 → 2 m/s까지 가속 → 10m 직진 → 정지 10초
-   - 평가: 전환 시 heading snap 최소화
+### 8.7 빠른 체크리스트
+- 센서 타임스탬프가 “측정 시각”인지 확인(콜백 now 사용 금지).
+- 새 GPS일 때만 위치/속도 보정(게이팅) 또는 외삽으로 now 보정.
+- publish 직전 predict-to-now 적용.
+- TF/프레임/큐 정렬 확인(특히 odom↔base_link, gps 프레임).
+- Q/R 튜닝으로 α 조절.
 
-2. **저속 순환 주행**
-   - 0.3 m/s로 원형 경로 주행
-   - 평가: 전환 영역에서 heading 안정성
-
-3. **고속 직진**
-   - 1 m/s 이상으로 직진
-   - 평가: GPS/IMU 융합 부드러움 (8Hz 이상 체감)
-
-## 9. 결론 및 요약 (2025.08.22. 업데이트)
-
-### 9.1 현재 상태 진단
-- **문제의 본질**: EKF 내부에서는 GPS/IMU 융합이 작동하지만, 출력 단계(`publishOdometry`)에서 EKF 결과를 무시하고 GPS 속도 직접 사용
-- **정지 시 발산**: GPS 속도 노이즈로 인한 `atan2(노이즈, 노이즈)` 문제
-- **이진 스위칭**: 0.08 m/s 경계에서 급격한 ON/OFF 전환
-
-### 9.2 제안된 해결책
-**속도 기반 3단계 융합 전략**:
-1. **저속** (< 0.08 m/s): IMU만 사용 (R = 1e10)
-2. **전환** (0.08 ~ 0.5 m/s): GPS 강하게 신뢰 (R = 0.001)  
-3. **고속** (> 0.5 m/s): 적절한 융합 (R = 0.01)
-
-### 9.3 구현 우선순위
-1. **즉시**: `publishOdometry()`에서 EKF 결과 직접 사용하도록 수정
-2. **단기**: R(6,6) 동적 조절 함수 추가
-3. **장기**: 히스테리시스 및 부드러운 전환 구현
+### 8.8 한 줄 요약
+EKF가 본질적으로 느려서가 아니라, “지연된 GPS를 현재에 바로 섞음 +(now까지 예측 부족) + 시간 정렬 이슈” 때문에 뒤로 보입니다. 새 GPS에서만 보정하고(now 외삽/되감기·재전개) 출력 시 현재까지 예측하면 GPS-only 대비 뒤처짐은 사라지거나 수 cm로 줄어듭니다.

@@ -14,7 +14,8 @@ def generate_launch_description():
      └── odom (static identity transform)
           └── base_link (dynamic, published by EKF)
                ├── os_sensor (static: -0.3m back, 0.7m up)
-               ├── gps (static: 0.5m forward, 0.2m up) 
+               │   └── os_imu (static: -0.3m back, 0.7m up)
+               └── gps (static: 0.5m forward, 0.2m up) 
     """
     
     pkg_share = FindPackageShare('gps_imu_fusion')
@@ -53,17 +54,17 @@ def generate_launch_description():
         ),
         
         # Sensor offset parameters (for easy adjustment)
-        DeclareLaunchArgument('os_sensor_x', default_value='-0.3', description='Ouster sensor X offset from base_link (m)'),
+        DeclareLaunchArgument('os_sensor_x', default_value='0.0', description='Ouster sensor X offset from base_link (m)'),
         DeclareLaunchArgument('os_sensor_y', default_value='0.0', description='Ouster sensor Y offset from base_link (m)'),
         DeclareLaunchArgument('os_sensor_z', default_value='0.7', description='Ouster sensor Z offset from base_link (m)'),
         
         DeclareLaunchArgument('gps_x', default_value='0.5', description='GPS antenna X offset from base_link (m)'),
         DeclareLaunchArgument('gps_y', default_value='0.0', description='GPS antenna Y offset from base_link (m)'),
-        DeclareLaunchArgument('gps_z', default_value='0.2', description='GPS antenna Z offset from base_link (m)'),
+        DeclareLaunchArgument('gps_z', default_value='0.0', description='GPS antenna Z offset from base_link (m)'),
         
-        DeclareLaunchArgument('imu_x', default_value='-0.3', description='IMU X offset from base_link (m)'),
+        DeclareLaunchArgument('imu_x', default_value='0.0', description='IMU X offset from base_link (m)'),
         DeclareLaunchArgument('imu_y', default_value='0.0', description='IMU Y offset from base_link (m)'),
-        DeclareLaunchArgument('imu_z', default_value='0.7', description='IMU Z offset from base_link (m)'),
+        DeclareLaunchArgument('imu_z', default_value='0.0', description='IMU Z offset from base_link (m)'),
         
         # # GPS to Cartesian converter node
         # Node(

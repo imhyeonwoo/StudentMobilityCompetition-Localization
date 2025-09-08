@@ -8,6 +8,9 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <mutex>
 #include <memory>
 #include <GeographicLib/UTMUPS.hpp>
@@ -34,6 +37,8 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   
   std::unique_ptr<kai::KaiEkfCore> ekf_;
   
@@ -68,12 +73,26 @@ private:
   void publishOdometry();
   void publishTransform();
   
+  // TF transformation helper functions
+  bool transformIMUToBaseLink(
+    const geometry_msgs::msg::Vector3& angular_velocity_in,
+    const geometry_msgs::msg::Vector3& linear_acceleration_in,
+    geometry_msgs::msg::Vector3& angular_velocity_out,
+    geometry_msgs::msg::Vector3& linear_acceleration_out,
+    const rclcpp::Time& timestamp);
+    
+  bool transformGPSToBaseLink(
+    const double local_x, const double local_y, const double local_z,
+    double& base_x, double& base_y, double& base_z,
+    const rclcpp::Time& timestamp);
+  
   rclcpp::TimerBase::SharedPtr timer_;
   
   std::string world_frame_id_;
   std::string base_frame_id_;
   std::string gnss_frame_id_;
   std::string imu_frame_id_;
+  std::string detected_imu_frame_id_;  // Dynamically detected IMU frame
   double update_rate_;
   double mag_declination_;
   bool use_magnetic_declination_;
@@ -111,6 +130,17 @@ private:
   int stationary_imu_decimation_factor_ = 10;  // 정지 상태에서 10번 중 1번만 업데이트
   
   rclcpp::Time last_update_time_;
+  
+  // Lever arm compensation members for IMU
+  tf2::Vector3 omega_b_prev_;  // Previous angular velocity in base frame
+  rclcpp::Time imu_prev_time_;  // Previous IMU timestamp for dt calculation
+  bool imu_lever_arm_initialized_ = false;  // Flag for first IMU data
+  
+  // Lever arm threshold parameters
+  double lever_arm_min_len_m_;  // Minimum lever arm length to apply correction (m)
+  double imu_dt_min_s_;  // Minimum time difference for angular acceleration calculation (s)
+  double imu_dt_max_s_;  // Maximum time difference for angular acceleration calculation (s)
+  double alpha_max_rad_s2_;  // Maximum angular acceleration clamp value (rad/s²)
   
   void loadParameters();
   

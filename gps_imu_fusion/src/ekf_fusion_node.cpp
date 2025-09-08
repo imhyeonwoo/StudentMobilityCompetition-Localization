@@ -1,5 +1,7 @@
 #include "gps_imu_fusion/ekf_fusion_node.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Vector3.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cmath>
 #include <chrono>
@@ -28,6 +30,10 @@ EkfFusionNode::EkfFusionNode(const rclcpp::NodeOptions& options)
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("odometry/filtered", 10);
   pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose/filtered", 10);
   path_pub_ = this->create_publisher<nav_msgs::msg::Path>("path", 10);
+  
+  // Initialize TF buffer and listener for lever arm compensation
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   
@@ -171,6 +177,20 @@ void EkfFusionNode::loadParameters() {
     this->declare_parameter<double>("init_gyro_bias_unc", 0.01745);
   }
   
+  // Lever arm threshold parameters
+  if (!this->has_parameter("lever_arm_min_len_m")) {
+    this->declare_parameter<double>("lever_arm_min_len_m", 0.001);  // 1mm default
+  }
+  if (!this->has_parameter("imu_dt_min_s")) {
+    this->declare_parameter<double>("imu_dt_min_s", 1e-4);  // 0.1ms default
+  }
+  if (!this->has_parameter("imu_dt_max_s")) {
+    this->declare_parameter<double>("imu_dt_max_s", 0.1);  // 100ms default
+  }
+  if (!this->has_parameter("alpha_max_rad_s2")) {
+    this->declare_parameter<double>("alpha_max_rad_s2", 100.0);  // 100 rad/s² default
+  }
+  
   // 2. 선언된 파라미터의 값을 가져와 멤버 변수에 할당합니다.
   //    (yaml에 값이 있으면 그 값을, 없으면 위에서 선언한 기본값을 가져옵니다)
   world_frame_id_ = this->get_parameter("world_frame_id").as_string();
@@ -201,6 +221,12 @@ void EkfFusionNode::loadParameters() {
   double gps_heading_noise_high = this->get_parameter("gps_heading_noise_high").as_double();
   double speed_threshold_mid = this->get_parameter("speed_threshold_mid").as_double();
   
+  // Load lever arm threshold parameters
+  lever_arm_min_len_m_ = this->get_parameter("lever_arm_min_len_m").as_double();
+  imu_dt_min_s_ = this->get_parameter("imu_dt_min_s").as_double();
+  imu_dt_max_s_ = this->get_parameter("imu_dt_max_s").as_double();
+  alpha_max_rad_s2_ = this->get_parameter("alpha_max_rad_s2").as_double();
+  
   // 3. 파라미터 로딩 상태를 로깅합니다.
   RCLCPP_INFO(this->get_logger(), "Parameters loaded successfully.");
   RCLCPP_INFO(this->get_logger(), "Update rate: %.1f Hz", update_rate_);
@@ -218,6 +244,8 @@ void EkfFusionNode::loadParameters() {
   RCLCPP_INFO(this->get_logger(), "Transition state min hold time: %.2f s", transition_min_hold_time_);
   RCLCPP_INFO(this->get_logger(), "Stationary IMU decimation: 1/%d", stationary_imu_decimation_factor_);
   RCLCPP_INFO(this->get_logger(), "Reference altitude: %.1f m", reference_altitude_);
+  RCLCPP_INFO(this->get_logger(), "Lever arm thresholds loaded: min_len=%.4fm, dt=[%.6f,%.3f]s, alpha_max=%.1frad/s²", 
+              lever_arm_min_len_m_, imu_dt_min_s_, imu_dt_max_s_, alpha_max_rad_s2_);
 }
 
 void EkfFusionNode::configureEkfParameters() {
@@ -282,9 +310,9 @@ void EkfFusionNode::gnssCallback(const sensor_msgs::msg::NavSatFix::SharedPtr ms
                latest_utm_.zone, latest_utm_.band, latest_utm_.easting, latest_utm_.northing);
   
   if (!origin_set_) {
-    // 건국대 일감호를 원점으로 설정
-    double ref_lat = 37.540091;
-    double ref_lon = 127.076555;
+    // 테스트 장소를 원점으로 설정
+    double ref_lat = 37.237394; 
+    double ref_lon = 126.770827;
     auto ref_utm = llToUtm(ref_lat, ref_lon);
     origin_utm_x_ = ref_utm.easting;
     origin_utm_y_ = ref_utm.northing;
@@ -293,12 +321,109 @@ void EkfFusionNode::gnssCallback(const sensor_msgs::msg::NavSatFix::SharedPtr ms
                 origin_utm_x_, origin_utm_y_, ref_utm.zone, ref_utm.band);
   }
   
-  kai::GpsCoordinate coor;
-  coor.lat = msg->latitude * M_PI / 180.0;  
-  coor.lon = msg->longitude * M_PI / 180.0;
-  coor.alt = msg->altitude;  
+  // GPS position in world local frame (relative to origin)
+  double gps_local_x = latest_utm_.easting - origin_utm_x_;
+  double gps_local_y = latest_utm_.northing - origin_utm_y_;
+  double gps_local_z = msg->altitude - reference_altitude_;
   
-  RCLCPP_DEBUG(this->get_logger(), "Updating EKF with GPS coordinates: %.6f, %.6f rad, %.2f m", 
+  // Apply GPS lever arm correction: p_base^w = p_gps^w - R_w^b * t_b->g
+  double base_local_x, base_local_y, base_local_z;
+  
+  rclcpp::Time gps_timestamp = msg->header.stamp;
+  if (gps_timestamp.seconds() == 0) {
+    gps_timestamp = this->now();
+  }
+  
+  // Try to get TF from base_link to gps and EKF attitude for lever arm correction
+  try {
+    // Get the transform from base_link to GPS (for lever arm vector)
+    geometry_msgs::msg::TransformStamped base_to_gps = 
+        tf_buffer_->lookupTransform("base_link", "gps",  // Fix 1: TF direction corrected
+                                   tf2::TimePointZero, tf2::durationFromSec(0.1));
+    
+    // Extract lever arm vector t_b->g (from base_link to GPS in base frame)
+    tf2::Vector3 t_bg(base_to_gps.transform.translation.x,  // No negation needed
+                      base_to_gps.transform.translation.y,
+                      base_to_gps.transform.translation.z);
+    
+    // Only apply lever arm correction if we have valid EKF estimates and significant lever arm
+    if (ekf_->initialized() && t_bg.length() > lever_arm_min_len_m_) {
+      // Get current attitude estimates from EKF
+      float roll = ekf_->getRoll_rad();
+      float pitch = ekf_->getPitch_rad();
+      float yaw = ekf_->getHeading_rad();
+      
+      // Construct rotation matrix R_w^b (world <- base)
+      // Using ZYX (yaw-pitch-roll) convention
+      double cr = cos(roll), sr = sin(roll);
+      double cp = cos(pitch), sp = sin(pitch);
+      double cy = cos(yaw), sy = sin(yaw);
+      
+      // R_w^b matrix elements
+      tf2::Matrix3x3 R_wb;
+      R_wb.setValue(
+        cy*cp,  cy*sp*sr - sy*cr,  cy*sp*cr + sy*sr,
+        sy*cp,  sy*sp*sr + cy*cr,  sy*sp*cr - cy*sr,
+        -sp,    cp*sr,             cp*cr
+      );
+      
+      // Transform lever arm to world frame: r_g_world = R_w^b * t_bg
+      tf2::Vector3 r_g_world = R_wb * t_bg;
+      
+      // Apply lever arm correction: p_base_world = p_gps_world - r_g_world
+      base_local_x = gps_local_x - r_g_world.x();
+      base_local_y = gps_local_y - r_g_world.y();
+      base_local_z = gps_local_z - r_g_world.z();
+      
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "GPS lever arm correction applied: t_bg=[%.3f,%.3f,%.3f], "
+                          "r_g_world=[%.3f,%.3f,%.3f], attitude=[%.3f,%.3f,%.3f]rad",
+                          t_bg.x(), t_bg.y(), t_bg.z(),
+                          r_g_world.x(), r_g_world.y(), r_g_world.z(),
+                          roll, pitch, yaw);
+    } else {
+      // No lever arm correction (EKF not initialized or lever arm too small)
+      base_local_x = gps_local_x;
+      base_local_y = gps_local_y;
+      base_local_z = gps_local_z;
+      
+      if (!ekf_->initialized()) {
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "GPS lever arm correction skipped: EKF not initialized");
+      } else {
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "GPS lever arm correction skipped: lever arm too small (||t_bg||=%.4f m)",
+                            t_bg.length());
+      }
+    }
+  } catch (tf2::TransformException& ex) {
+    // TF lookup failed, use GPS position without lever arm correction
+    base_local_x = gps_local_x;
+    base_local_y = gps_local_y;
+    base_local_z = gps_local_z;
+    
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                       "GPS lever arm correction failed: TF lookup error - %s", ex.what());
+  }
+  
+  // Convert corrected base_link position back to GPS coordinates for EKF update
+  double base_utm_x = origin_utm_x_ + base_local_x;
+  double base_utm_y = origin_utm_y_ + base_local_y;
+  double base_alt = reference_altitude_ + base_local_z;
+  
+  // Convert UTM back to lat/lon
+  double base_lat, base_lon;
+  int zone = latest_utm_.zone;
+  bool northp = (latest_utm_.band == 'N');
+  GeographicLib::UTMUPS::Reverse(zone, northp, base_utm_x, base_utm_y,
+                                 base_lat, base_lon);
+  
+  kai::GpsCoordinate coor;
+  coor.lat = base_lat * M_PI / 180.0;  
+  coor.lon = base_lon * M_PI / 180.0;
+  coor.alt = base_alt;  
+  
+  RCLCPP_DEBUG(this->get_logger(), "Updating EKF with base_link GPS coordinates: %.6f, %.6f rad, %.2f m", 
                coor.lat, coor.lon, coor.alt);
   ekf_->gpsCoordinateUpdateEkf(coor);
   
@@ -337,13 +462,103 @@ void EkfFusionNode::gnssVelCallback(const geometry_msgs::msg::TwistWithCovarianc
   
   latest_gnss_vel_ = *msg;
   
+  // GPS velocity in NED frame
+  tf2::Vector3 v_gps_world(msg->twist.twist.linear.x,  // North
+                           msg->twist.twist.linear.y,  // East
+                           -msg->twist.twist.linear.z); // Down (negated)
+  
+  // Apply GPS velocity lever arm correction: v_base^w = v_gps^w − omega^w × (R_wb * t_bg)
+  tf2::Vector3 v_base_world = v_gps_world; // Default to raw GPS velocity
+  
+  // Only apply lever arm correction if EKF is initialized
+  if (ekf_->initialized() && received_imu_) {
+    try {
+      // Get the transform from base_link to GPS (for lever arm vector)
+      geometry_msgs::msg::TransformStamped base_to_gps = 
+          tf_buffer_->lookupTransform("base_link", "gps",  // Fix 1: TF direction corrected
+                                     tf2::TimePointZero, tf2::durationFromSec(0.1));
+      
+      // Extract lever arm vector t_bg (from base_link to GPS in base frame)
+      tf2::Vector3 t_bg(base_to_gps.transform.translation.x,  // No negation needed
+                        base_to_gps.transform.translation.y,
+                        base_to_gps.transform.translation.z);
+      
+      // Only apply correction if lever arm is significant (>= 1mm)
+      if (t_bg.length() >= lever_arm_min_len_m_) {
+        // Fix 2: Transform IMU angular velocity to base frame
+        geometry_msgs::msg::Vector3 omega_b_out, dummy_acc;
+        transformIMUToBaseLink(latest_imu_.angular_velocity,
+                              latest_imu_.linear_acceleration,
+                              omega_b_out, dummy_acc,
+                              latest_imu_.header.stamp);
+        
+        // Get angular velocity in base frame
+        tf2::Vector3 omega_b(omega_b_out.x,
+                            omega_b_out.y,
+                            omega_b_out.z);
+        
+        // Get current attitude estimates from EKF for R_wb
+        float roll = ekf_->getRoll_rad();
+        float pitch = ekf_->getPitch_rad();
+        float yaw = ekf_->getHeading_rad();
+        
+        // Construct rotation matrix R_wb (world <- base)
+        // Using ZYX (yaw-pitch-roll) convention
+        double cr = cos(roll), sr = sin(roll);
+        double cp = cos(pitch), sp = sin(pitch);
+        double cy = cos(yaw), sy = sin(yaw);
+        
+        // R_wb matrix
+        tf2::Matrix3x3 R_wb;
+        R_wb.setValue(
+          cy*cp,  cy*sp*sr - sy*cr,  cy*sp*cr + sy*sr,
+          sy*cp,  sy*sp*sr + cy*cr,  sy*sp*cr - cy*sr,
+          -sp,    cp*sr,             cp*cr
+        );
+        
+        // Transform angular velocity to world frame: omega_w = R_wb * omega_b
+        tf2::Vector3 omega_w = R_wb * omega_b;
+        
+        // Transform lever arm to world frame: r_g_world = R_wb * t_bg
+        tf2::Vector3 r_g_world = R_wb * t_bg;
+        
+        // Calculate velocity correction: v_correction = omega_w × r_g_world
+        tf2::Vector3 v_correction = omega_w.cross(r_g_world);
+        
+        // Apply lever arm correction: v_base = v_gps - v_correction
+        v_base_world = v_gps_world - v_correction;
+        
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "GPS velocity lever arm correction: omega_w=[%.3f,%.3f,%.3f], "
+                            "v_correction=[%.3f,%.3f,%.3f]",
+                            omega_w.x(), omega_w.y(), omega_w.z(),
+                            v_correction.x(), v_correction.y(), v_correction.z());
+      } else {
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "GPS velocity lever arm correction skipped: lever arm too small (||t_bg||=%.4f m)",
+                            t_bg.length());
+      }
+    } catch (tf2::TransformException& ex) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                         "GPS velocity lever arm correction failed: TF lookup error - %s", ex.what());
+    }
+  } else {
+    if (!ekf_->initialized()) {
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "GPS velocity lever arm correction skipped: EKF not initialized");
+    } else {
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "GPS velocity lever arm correction skipped: IMU data not available");
+    }
+  }
+  
+  // Update EKF with corrected base_link velocity
   kai::GpsVelocity vel;
+  vel.vN = v_base_world.x();  // North
+  vel.vE = v_base_world.y();  // East  
+  vel.vD = v_base_world.z();  // Down
   
-  vel.vN = msg->twist.twist.linear.x;  
-  vel.vE = msg->twist.twist.linear.y;  
-  vel.vD = -msg->twist.twist.linear.z; 
-  
-  RCLCPP_DEBUG(this->get_logger(), "Updating EKF with GPS velocity: vN=%.3f, vE=%.3f, vD=%.3f m/s", 
+  RCLCPP_DEBUG(this->get_logger(), "Updating EKF with base_link velocity: vN=%.3f, vE=%.3f, vD=%.3f m/s", 
                vel.vN, vel.vE, vel.vD);
   ekf_->gpsVelocityUpdateEkf(vel);
   
@@ -476,15 +691,113 @@ void EkfFusionNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
   }
   // --- 여기까지 추가 ---
 
+  // Transform IMU data from sensor frame to base_link frame
+  geometry_msgs::msg::Vector3 angular_velocity_transformed;
+  geometry_msgs::msg::Vector3 linear_acceleration_transformed;
+  
+  rclcpp::Time imu_timestamp = msg->header.stamp;
+  if (imu_timestamp.seconds() == 0) {
+    imu_timestamp = this->now();
+  }
+  
+  bool tf_success = transformIMUToBaseLink(
+    msg->angular_velocity,
+    msg->linear_acceleration,
+    angular_velocity_transformed,
+    linear_acceleration_transformed,
+    imu_timestamp
+  );
+  
+  if (!tf_success) {
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                         "IMU TF transformation failed, using raw data");
+  }
+  
+  // ==== LEVER ARM COMPENSATION FOR IMU (Section 9.4) ====
+  // After rotation transformation, apply dynamic lever arm correction
+  geometry_msgs::msg::Vector3 corrected_acceleration = linear_acceleration_transformed;
+  
+  if (tf_success) {
+    try {
+      // Get the lever arm vector t_bi from base_link to IMU
+      geometry_msgs::msg::TransformStamped base_to_imu = 
+          tf_buffer_->lookupTransform("base_link", detected_imu_frame_id_,  // Fix 1: TF direction corrected
+                                     tf2::TimePointZero, tf2::durationFromSec(0.1));
+      
+      // Extract t_bi (base->imu in base frame)
+      tf2::Vector3 t_bi(base_to_imu.transform.translation.x,  // No negation needed
+                        base_to_imu.transform.translation.y,
+                        base_to_imu.transform.translation.z);
+      
+      // Only apply lever arm compensation if lever arm is significant
+      if (t_bi.length() > lever_arm_min_len_m_) {
+        // Current angular velocity in base frame (already transformed)
+        tf2::Vector3 omega_b(angular_velocity_transformed.x,
+                            angular_velocity_transformed.y,
+                            angular_velocity_transformed.z);
+        
+        // Calculate angular acceleration α^b ≈ (ω^b_now - ω^b_prev) / dt
+        tf2::Vector3 alpha_b(0, 0, 0);
+        if (imu_lever_arm_initialized_) {
+          double dt = (imu_timestamp - imu_prev_time_).seconds();
+          if (dt > imu_dt_min_s_ && dt < imu_dt_max_s_) {  // Sanity check on dt
+            alpha_b = (omega_b - omega_b_prev_) / dt;
+            
+            // Clamp alpha to reasonable values (max 100 rad/s²)
+            double alpha_norm = alpha_b.length();
+            if (alpha_norm > alpha_max_rad_s2_) {
+              alpha_b = alpha_b.normalized() * alpha_max_rad_s2_;
+              RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                  "IMU angular acceleration clamped: ||α||=%.2f -> %.1f rad/s²", 
+                                  alpha_norm, alpha_max_rad_s2_);
+            }
+          } else {
+            RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                "IMU lever arm compensation: dt invalid (%.3f s), skipping α calculation", dt);
+          }
+        }
+        
+        // Apply lever arm correction: a_b^b = a_i^b - α^b × t_bi - ω^b × (ω^b × t_bi)
+        tf2::Vector3 alpha_cross_r = alpha_b.cross(t_bi);
+        tf2::Vector3 omega_cross_r = omega_b.cross(t_bi);
+        tf2::Vector3 centripetal = omega_b.cross(omega_cross_r);
+        
+        // Subtract correction terms
+        corrected_acceleration.x -= (alpha_cross_r.x() + centripetal.x());
+        corrected_acceleration.y -= (alpha_cross_r.y() + centripetal.y());
+        corrected_acceleration.z -= (alpha_cross_r.z() + centripetal.z());
+        
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                            "IMU lever arm compensation: t_bi=[%.3f,%.3f,%.3f], "
+                            "α×r=[%.3f,%.3f,%.3f], ω×(ω×r)=[%.3f,%.3f,%.3f]",
+                            t_bi.x(), t_bi.y(), t_bi.z(),
+                            alpha_cross_r.x(), alpha_cross_r.y(), alpha_cross_r.z(),
+                            centripetal.x(), centripetal.y(), centripetal.z());
+        
+        // Update previous values for next iteration
+        omega_b_prev_ = omega_b;
+        imu_prev_time_ = imu_timestamp;
+        imu_lever_arm_initialized_ = true;
+      } else {
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "IMU lever arm compensation skipped: lever arm too small (||t_bi||=%.4f m)", t_bi.length());
+      }
+    } catch (tf2::TransformException& ex) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "IMU lever arm compensation failed: TF lookup error - %s", ex.what());
+    }
+  }
+  
   kai::ImuData imu_data;
   
-  imu_data.gyroX = msg->angular_velocity.x;
-  imu_data.gyroY = msg->angular_velocity.y;
-  imu_data.gyroZ = msg->angular_velocity.z;
+  imu_data.gyroX = angular_velocity_transformed.x;
+  imu_data.gyroY = angular_velocity_transformed.y;
+  imu_data.gyroZ = angular_velocity_transformed.z;
   
-  imu_data.accX = msg->linear_acceleration.x;
-  imu_data.accY = msg->linear_acceleration.y;
-  imu_data.accZ = msg->linear_acceleration.z;
+  // Use corrected acceleration (with lever arm compensation)
+  imu_data.accX = corrected_acceleration.x;
+  imu_data.accY = corrected_acceleration.y;
+  imu_data.accZ = corrected_acceleration.z;
   
   imu_data.hX = 1.0;
   imu_data.hY = 0.0;
@@ -814,6 +1127,98 @@ void EkfFusionNode::publishTransform() {
   RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 3000, 
                        "Published transform: %s -> %s", 
                        world_frame_id_.c_str(), base_frame_id_.c_str());
+}
+
+bool EkfFusionNode::transformIMUToBaseLink(
+    const geometry_msgs::msg::Vector3& angular_velocity_in,
+    const geometry_msgs::msg::Vector3& linear_acceleration_in,
+    geometry_msgs::msg::Vector3& angular_velocity_out,
+    geometry_msgs::msg::Vector3& linear_acceleration_out,
+    const rclcpp::Time& timestamp)
+{
+    try {
+        // Dynamically determine IMU frame if not yet detected
+        if (detected_imu_frame_id_.empty()) {
+            // Allow some time for TF to be populated
+            if (tf_buffer_->canTransform("base_link", "imu_link", tf2::TimePointZero)) {
+                detected_imu_frame_id_ = "imu_link";
+                RCLCPP_INFO(this->get_logger(), "Detected IMU frame: imu_link (real car scenario)");
+            } else if (tf_buffer_->canTransform("base_link", "os_imu", tf2::TimePointZero)) {
+                detected_imu_frame_id_ = "os_imu";
+                RCLCPP_INFO(this->get_logger(), "Detected IMU frame: os_imu (Nocheon scenario)");
+            } else {
+                // If no TF available yet, pass through without transformation
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                    "No IMU transform found, using raw data");
+                angular_velocity_out = angular_velocity_in;
+                linear_acceleration_out = linear_acceleration_in;
+                return false;
+            }
+        }
+        
+        // Get the transform from IMU frame to base_link
+        geometry_msgs::msg::TransformStamped transform = 
+            tf_buffer_->lookupTransform("base_link", detected_imu_frame_id_, 
+                                       timestamp, tf2::durationFromSec(0.1));
+        
+        // Transform angular velocity vector (frame rotation only)
+        geometry_msgs::msg::Vector3Stamped angular_vel_stamped;
+        angular_vel_stamped.header.frame_id = detected_imu_frame_id_;
+        angular_vel_stamped.header.stamp = timestamp;
+        angular_vel_stamped.vector = angular_velocity_in;
+        
+        geometry_msgs::msg::Vector3Stamped angular_vel_transformed;
+        tf2::doTransform(angular_vel_stamped, angular_vel_transformed, transform);
+        angular_velocity_out = angular_vel_transformed.vector;
+        
+        // Transform linear acceleration vector (rotation-only)
+        geometry_msgs::msg::Vector3Stamped linear_accel_stamped;
+        linear_accel_stamped.header.frame_id = detected_imu_frame_id_;
+        linear_accel_stamped.header.stamp = timestamp;
+        linear_accel_stamped.vector = linear_acceleration_in;
+        
+        geometry_msgs::msg::Vector3Stamped linear_accel_transformed;
+        tf2::doTransform(linear_accel_stamped, linear_accel_transformed, transform);
+        
+        // Simply use the rotated acceleration (no lever arm dynamics correction)
+        // Lever arm dynamics are handled in imuCallback
+        linear_acceleration_out = linear_accel_transformed.vector;
+        
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "IMU data transformed from %s to base_link (rotation-only)", 
+                            detected_imu_frame_id_.c_str());
+        
+        return true;
+    } catch (tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "IMU TF lookup failed: %s", ex.what());
+        // If transform fails, pass through raw data
+        angular_velocity_out = angular_velocity_in;
+        linear_acceleration_out = linear_acceleration_in;
+        return false;
+    }
+}
+
+// DEPRECATED: This function incorrectly treated world local coordinates as GPS frame points
+// The correct lever arm compensation is now implemented directly in gnssCallback()
+// Kept for backward compatibility but not used
+bool EkfFusionNode::transformGPSToBaseLink(
+    const double local_x, const double local_y, const double local_z,
+    double& base_x, double& base_y, double& base_z,
+    const rclcpp::Time& timestamp)
+{
+    // This function is deprecated and should not be used
+    // The correct GPS lever arm compensation is implemented in gnssCallback()
+    // Simply pass through the values without transformation
+    base_x = local_x;
+    base_y = local_y;
+    base_z = local_z;
+    
+    RCLCPP_WARN_ONCE(this->get_logger(), 
+                     "transformGPSToBaseLink() is deprecated. GPS lever arm compensation "
+                     "is now handled correctly in gnssCallback()");
+    
+    return false;  // Always return false to indicate this function should not be used
 }
 
 }
