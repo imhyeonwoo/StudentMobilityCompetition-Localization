@@ -1,7 +1,7 @@
 imu_preprocess_node:
   ros__parameters:
     # Pre-calibrated IMU bias values
-    use_precalibrated_bias: true
+    use_precalibrated_bias: false
     
     # Accelerometer bias [m/s²]
     bias_acc_x: -0.20183853281631028
@@ -14,4 +14,4 @@ imu_preprocess_node:
     bias_gyro_z: -0.02373539930695253
     
     # Low-pass filter settings
-    lpf_cutoff: 5.0  # 0 to disable LPF
+    lpf_cutoff: 1.0  # 0 to disable LPF
