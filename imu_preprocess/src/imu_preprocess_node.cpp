@@ -11,6 +11,9 @@ public:
     /* ---------- 파라미터 ---------- */
     use_precalibrated_bias_ = declare_parameter<bool>("use_precalibrated_bias", false);
     lpf_cutoff_ = declare_parameter<double>("lpf_cutoff", 15.0);  // 1차 IIR LPF 컷오프 [Hz]
+    // 중력 보정 옵션 (동작 중 보정)
+    remove_gravity_   = declare_parameter<bool>("remove_gravity", false); // 기본은 비활성화 (역호환)
+    gravity_magnitude_ = declare_parameter<double>("gravity_magnitude", 9.81);
     
     // Pre-calibrated bias parameters
     if (use_precalibrated_bias_) {
@@ -47,6 +50,53 @@ public:
   }
 
 private:
+  /* ===== 유틸: 쿼터니언 정규화 ===== */
+  static void normalizeQuaternion(double &w, double &x, double &y, double &z)
+  {
+    const double n = std::sqrt(w*w + x*x + y*y + z*z);
+    if (n > 1e-12) {
+      w /= n; x /= n; y /= n; z /= n;
+    } else {
+      // 기본 단위쿼터니언
+      w = 1.0; x = y = z = 0.0;
+    }
+  }
+
+  /* ===== 유틸: R^T * [0,0,g] (world→body) ===== */
+  static void gravityInBodyFrame(double qw, double qx, double qy, double qz,
+                                 double g, double &gx_b, double &gy_b, double &gz_b)
+  {
+    // q: body→world 회전. R은 body→world, 그러면 g_body = R^T * g_world.
+    normalizeQuaternion(qw, qx, qy, qz);
+    const double xx = qx*qx;
+    const double yy = qy*qy;
+    const double zz = qz*qz;
+    const double wx = qw*qx;
+    const double wy = qw*qy;
+    const double wz = qw*qz;
+    const double xy = qx*qy;
+    const double xz = qx*qz;
+    const double yz = qy*qz;
+
+    // g_body = g * (R^T의 3번째 컬럼) = g * (R의 3번째 행)
+    gx_b = g * (2.0*(xz - wy));
+    gy_b = g * (2.0*(yz + wx));
+    gz_b = g * (1.0 - 2.0*(xx + yy));
+  }
+
+  /* ===== 유틸: orientation 유효성 체크 ===== */
+  static bool orientationValid(const sensor_msgs::msg::Imu &m)
+  {
+    // REP-145: orientation_covariance[0] == -1 이면 orientation 미제공 (권장)
+    bool cov_valid = true;
+    if (!m.orientation_covariance.empty()) {
+      cov_valid = (m.orientation_covariance[0] >= 0.0);
+    }
+    const auto &q = m.orientation;
+    const double n2 = q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z;
+    return cov_valid && (n2 > 1e-8) && std::isfinite(n2);
+  }
+
   /* ===== IMU 콜백 ===== */
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
   {
@@ -75,6 +125,23 @@ private:
     out.angular_velocity.y    -= bias_gyro_[1];
     out.angular_velocity.z    -= bias_gyro_[2];
 
+    /* 2.5) 중력 보정(선택) ------------------------------- */
+    if (remove_gravity_) {
+      const bool has_ori = orientationValid(*msg);
+      if (has_ori) {
+        const auto &q = msg->orientation;
+        double gx_b, gy_b, gz_b;
+        gravityInBodyFrame(q.w, q.x, q.y, q.z, gravity_magnitude_, gx_b, gy_b, gz_b);
+        // 측정(바이어스 제거 후)에서 중력 성분 제거 → 정지 시 0 근처
+        out.linear_acceleration.x -= gx_b;
+        out.linear_acceleration.y -= gy_b;
+        out.linear_acceleration.z -= gz_b;
+      } else if (!warned_orientation_missing_) {
+        warned_orientation_missing_ = true;
+        RCLCPP_WARN(get_logger(), "remove_gravity 활성화 됐지만 orientation이 유효하지 않아 중력 보정을 건너뜁니다.");
+      }
+    }
+
     /* 3) 1차 IIR 저역통과필터 --------------------------- */
     if (lpf_cutoff_ > 0.0) {
       const double tau   = 1.0 / (2.0 * M_PI * lpf_cutoff_);
@@ -100,9 +167,20 @@ private:
   /* ===== 편향 누적 ===== */
   void accumulateBias(const sensor_msgs::msg::Imu &m)
   {
-    sum_acc_[0]  += m.linear_acceleration.x;
-    sum_acc_[1]  += m.linear_acceleration.y;
-    sum_acc_[2]  += m.linear_acceleration.z - 9.81;         // 중력 제거(Z)
+    // orientation이 유효하면 모든 축에 대해 중력 성분을 제거하여 바이어스 평균을 구한다.
+    if (orientationValid(m)) {
+      const auto &q = m.orientation;
+      double gx_b, gy_b, gz_b;
+      gravityInBodyFrame(q.w, q.x, q.y, q.z, gravity_magnitude_, gx_b, gy_b, gz_b);
+      sum_acc_[0]  += (m.linear_acceleration.x - gx_b);
+      sum_acc_[1]  += (m.linear_acceleration.y - gy_b);
+      sum_acc_[2]  += (m.linear_acceleration.z - gz_b);
+    } else {
+      // orientation 미제공 시 기존 로직 유지 (Z축만 9.81 제거)
+      sum_acc_[0]  += m.linear_acceleration.x;
+      sum_acc_[1]  += m.linear_acceleration.y;
+      sum_acc_[2]  += m.linear_acceleration.z - gravity_magnitude_; // 중력 제거(Z)
+    }
     sum_gyro_[0] += m.angular_velocity.x;
     sum_gyro_[1] += m.angular_velocity.y;
     sum_gyro_[2] += m.angular_velocity.z;
@@ -132,7 +210,10 @@ private:
   bool use_precalibrated_bias_;
   double calib_duration_;
   double lpf_cutoff_;
+  bool remove_gravity_;
+  double gravity_magnitude_;
   bool calibrated_{false};
+  bool warned_orientation_missing_{false};
 
   std::array<double,3> sum_acc_{}, sum_gyro_{};
   std::array<double,3> bias_acc_{}, bias_gyro_{};
