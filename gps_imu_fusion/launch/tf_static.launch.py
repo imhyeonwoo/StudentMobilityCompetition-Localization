@@ -9,31 +9,31 @@ def generate_launch_description():
         # Optional: temporary compatibility alias for reference frame
         DeclareLaunchArgument('publish_reference_tf', default_value='false', description='Publish map->reference identity for legacy Planning nodes'),
 
-        # # Sensor offsets relative to base_link
-        # DeclareLaunchArgument('os_sensor_x', default_value='0.483785'),
-        # DeclareLaunchArgument('os_sensor_y', default_value='0.0'),
-        # DeclareLaunchArgument('os_sensor_z', default_value='0.912377'),
-
-        # DeclareLaunchArgument('gps_x', default_value='1.3'),
-        # DeclareLaunchArgument('gps_y', default_value='0.0'),
-        # DeclareLaunchArgument('gps_z', default_value='0.357'),
-
-        # DeclareLaunchArgument('imu_x', default_value='1.307'),
-        # DeclareLaunchArgument('imu_y', default_value='0.0'),
-        # DeclareLaunchArgument('imu_z', default_value='-0.142'),
-
-        # ignore lever arm
-        DeclareLaunchArgument('os_sensor_x', default_value='0.0'),
+        # Sensor offsets relative to base_link
+        DeclareLaunchArgument('os_sensor_x', default_value='0.483785'),
         DeclareLaunchArgument('os_sensor_y', default_value='0.0'),
-        DeclareLaunchArgument('os_sensor_z', default_value='0.0'),
+        DeclareLaunchArgument('os_sensor_z', default_value='0.912377'),
 
-        DeclareLaunchArgument('gps_x', default_value='0.0'),
+        DeclareLaunchArgument('gps_x', default_value='1.3'),
         DeclareLaunchArgument('gps_y', default_value='0.0'),
-        DeclareLaunchArgument('gps_z', default_value='0.0'),
+        DeclareLaunchArgument('gps_z', default_value='0.357'),
 
-        DeclareLaunchArgument('imu_x', default_value='0.0'),
+        DeclareLaunchArgument('imu_x', default_value='1.307'),
         DeclareLaunchArgument('imu_y', default_value='0.0'),
-        DeclareLaunchArgument('imu_z', default_value='0.0'),
+        DeclareLaunchArgument('imu_z', default_value='-0.142'),
+
+        # # ignore lever arm
+        # DeclareLaunchArgument('os_sensor_x', default_value='0.0'),
+        # DeclareLaunchArgument('os_sensor_y', default_value='0.0'),
+        # DeclareLaunchArgument('os_sensor_z', default_value='0.0'),
+
+        # DeclareLaunchArgument('gps_x', default_value='0.0'),
+        # DeclareLaunchArgument('gps_y', default_value='0.0'),
+        # DeclareLaunchArgument('gps_z', default_value='0.0'),
+
+        # DeclareLaunchArgument('imu_x', default_value='0.0'),
+        # DeclareLaunchArgument('imu_y', default_value='0.0'),
+        # DeclareLaunchArgument('imu_z', default_value='0.0'),
 
         # map -> odom (identity until SLAM/localization owns it)
         Node(
@@ -108,6 +108,8 @@ def generate_launch_description():
         ),
 
         # base_link -> imu_link
+        # Rotate IMU frame by 180 deg about Z to align sensor X with vehicle forward
+        # Use quaternion form to avoid Euler order ambiguity: q = [0, 0, 1, 0] (yaw=pi)
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -116,7 +118,7 @@ def generate_launch_description():
                 LaunchConfiguration('imu_x'),
                 LaunchConfiguration('imu_y'),
                 LaunchConfiguration('imu_z'),
-                '0', '0', '0',
+                '0', '0', '1', '0',
                 'base_link', 'imu_link'
             ]
         ),

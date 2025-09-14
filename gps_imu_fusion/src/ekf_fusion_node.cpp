@@ -76,6 +76,9 @@ void EkfFusionNode::loadParameters() {
   if (!this->has_parameter("publish_tf")) {
     this->declare_parameter<bool>("publish_tf", true);
   }
+  if (!this->has_parameter("two_d_mode")) {
+    this->declare_parameter<bool>("two_d_mode", false);
+  }
   if (!this->has_parameter("use_gnss_heading")) {
     this->declare_parameter<bool>("use_gnss_heading", true);
   }
@@ -201,6 +204,7 @@ void EkfFusionNode::loadParameters() {
   mag_declination_ = this->get_parameter("mag_declination").as_double() * M_PI / 180.0;  
   use_magnetic_declination_ = this->get_parameter("use_magnetic_declination").as_bool();
   publish_tf_ = this->get_parameter("publish_tf").as_bool();
+  two_d_mode_ = this->get_parameter("two_d_mode").as_bool();
   use_gnss_heading_ = this->get_parameter("use_gnss_heading").as_bool();
   min_speed_for_gnss_heading_ = this->get_parameter("min_speed_for_gnss_heading").as_double();
   // Hysteresis thresholds
@@ -236,6 +240,7 @@ void EkfFusionNode::loadParameters() {
   RCLCPP_INFO(this->get_logger(), "GNSS heading: %s (min speed: %.2f m/s)", 
               use_gnss_heading_ ? "enabled" : "disabled",
               min_speed_for_gnss_heading_);
+  RCLCPP_INFO(this->get_logger(), "Two-D mode: %s (Z ignored)", two_d_mode_ ? "enabled" : "disabled");
   RCLCPP_INFO(this->get_logger(), "ZUPT hysteresis: low=%.3f, high=%.3f m/s; hold=%.2fs, release=%.2fs; noise stationary=%.3f, moving=%.3f", 
               zupt_thr_low, zupt_thr_high, zupt_hold_time_, zupt_release_time_,
               zupt_noise_stationary, zupt_noise_moving);
@@ -406,6 +411,11 @@ void EkfFusionNode::gnssCallback(const sensor_msgs::msg::NavSatFix::SharedPtr ms
                        "GPS lever arm correction failed: TF lookup error - %s", ex.what());
   }
   
+  // Two-D mode: force Z=0 (local) so altitude equals reference
+  if (two_d_mode_) {
+    base_local_z = 0.0;
+  }
+
   // Convert corrected base_link position back to GPS coordinates for EKF update
   double base_utm_x = origin_utm_x_ + base_local_x;
   double base_utm_y = origin_utm_y_ + base_local_y;
@@ -442,6 +452,13 @@ void EkfFusionNode::gnssCallback(const sensor_msgs::msg::NavSatFix::SharedPtr ms
         vel_cov[i] = latest_gnss_vel_.twist.covariance[i];
       }
     }
+
+    // Two-D mode: inflate Z variances to effectively ignore Z measurements
+    if (two_d_mode_) {
+      const double huge = 1.0e12;
+      pos_cov[8] = huge; // z variance
+      vel_cov[8] = huge; // v_z variance
+    }
     
     ekf_->setGpsCovariance(pos_cov, vel_cov);
     RCLCPP_DEBUG(this->get_logger(), "GPS covariance updated: pos_var=[%.4f, %.4f, %.4f]", 
@@ -462,10 +479,10 @@ void EkfFusionNode::gnssVelCallback(const geometry_msgs::msg::TwistWithCovarianc
   
   latest_gnss_vel_ = *msg;
   
-  // GPS velocity in NED frame
-  tf2::Vector3 v_gps_world(msg->twist.twist.linear.x,  // North
-                           msg->twist.twist.linear.y,  // East
-                           -msg->twist.twist.linear.z); // Down (negated)
+  // GPS velocity: input is ENU (x=East, y=North, z=Up). Convert to NED.
+  tf2::Vector3 v_gps_world(msg->twist.twist.linear.y,  // North (from ENU y)
+                           msg->twist.twist.linear.x,  // East  (from ENU x)
+                           -msg->twist.twist.linear.z); // Down (negated Up)
   
   // Apply GPS velocity lever arm correction: v_base^w = v_gps^w − omega^w × (R_wb * t_bg)
   tf2::Vector3 v_base_world = v_gps_world; // Default to raw GPS velocity
@@ -557,6 +574,11 @@ void EkfFusionNode::gnssVelCallback(const geometry_msgs::msg::TwistWithCovarianc
   vel.vN = v_base_world.x();  // North
   vel.vE = v_base_world.y();  // East  
   vel.vD = v_base_world.z();  // Down
+
+  // Two-D mode: drop vertical velocity
+  if (two_d_mode_) {
+    vel.vD = 0.0;
+  }
   
   RCLCPP_DEBUG(this->get_logger(), "Updating EKF with base_link velocity: vN=%.3f, vE=%.3f, vD=%.3f m/s", 
                vel.vN, vel.vE, vel.vD);
@@ -797,7 +819,8 @@ void EkfFusionNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
   // Use corrected acceleration (with lever arm compensation)
   imu_data.accX = corrected_acceleration.x;
   imu_data.accY = corrected_acceleration.y;
-  imu_data.accZ = corrected_acceleration.z;
+  // Two-D mode: ignore vertical acceleration for EKF input
+  imu_data.accZ = two_d_mode_ ? 0.0f : (float)corrected_acceleration.z;
   
   imu_data.hX = 1.0;
   imu_data.hY = 0.0;
@@ -831,10 +854,11 @@ void EkfFusionNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
       imu_data.gyroX * imu_data.gyroX +
       imu_data.gyroY * imu_data.gyroY +
       imu_data.gyroZ * imu_data.gyroZ);
+  // For stationary detection, use measured acceleration magnitude (not 2D-masked)
   double accel_norm = std::sqrt(
-      imu_data.accX * imu_data.accX +
-      imu_data.accY * imu_data.accY +
-      imu_data.accZ * imu_data.accZ);
+      corrected_acceleration.x * corrected_acceleration.x +
+      corrected_acceleration.y * corrected_acceleration.y +
+      corrected_acceleration.z * corrected_acceleration.z);
   double accel_dev = std::fabs(accel_norm - kai::GRAVITY);
   imu_stationary_flag_ = (gyro_norm < zupt_gyro_threshold_) && (accel_dev < zupt_accel_threshold_);
   
@@ -968,9 +992,11 @@ void EkfFusionNode::publishOdometry() {
     latest_gnss_vel_.twist.twist.linear.x * latest_gnss_vel_.twist.twist.linear.x +
     latest_gnss_vel_.twist.twist.linear.y * latest_gnss_vel_.twist.twist.linear.y);
   
-  // 항상 EKF 추정 헤딩 사용 (출력단 오버라이드 제거)
+  // EKF heading is NED yaw measured from North (clockwise to East).
+  // Convert to ENU yaw measured from East (counterclockwise to North) for pose/TF.
   heading = ekf_->getHeading_rad();
-  RCLCPP_DEBUG(this->get_logger(), "Using EKF estimated heading: %.2f rad", heading);
+  double yaw_enu = M_PI / 2.0 - heading;
+  RCLCPP_DEBUG(this->get_logger(), "Using ENU yaw: %.2f rad (from NED heading %.2f rad)", yaw_enu, heading);
   
   RCLCPP_DEBUG(this->get_logger(), "Attitude: roll=%.2f, pitch=%.2f, heading=%.2f rad", roll, pitch, heading);
   
@@ -981,7 +1007,7 @@ void EkfFusionNode::publishOdometry() {
   }
 
   tf2::Quaternion q;
-  q.setRPY(roll, pitch, heading);
+  q.setRPY(roll, pitch, yaw_enu);
   
   odom.pose.pose.orientation.w = q.w();
   odom.pose.pose.orientation.x = q.x();
@@ -991,10 +1017,17 @@ void EkfFusionNode::publishOdometry() {
   double vn = ekf_->getVelNorth_ms();
   double ve = ekf_->getVelEast_ms();
   double vd = ekf_->getVelDown_ms();
-  
-  odom.twist.twist.linear.x = vn;  
-  odom.twist.twist.linear.y = ve;  
-  odom.twist.twist.linear.z = -vd; 
+
+  // Convert world (NED) velocities to base_link frame using heading (yaw)
+  const double c = std::cos(heading);
+  const double s = std::sin(heading);
+  const double vx_body = c * vn + s * ve;
+  const double vy_body = -s * vn + c * ve;
+  const double vz_body = -vd; // base z up, EKF reports Down
+
+  odom.twist.twist.linear.x = vx_body;
+  odom.twist.twist.linear.y = vy_body;
+  odom.twist.twist.linear.z = two_d_mode_ ? 0.0 : vz_body;
   
   RCLCPP_DEBUG(this->get_logger(), "Velocity: vN=%.2f, vE=%.2f, vD=%.2f m/s", vn, ve, vd);
   
@@ -1027,6 +1060,28 @@ void EkfFusionNode::publishOdometry() {
       odom.twist.covariance[i * 6 + j] = vel_cov[i * 3 + j];
     }
   }
+
+  // Two-D mode: force outputs on XY plane and inflate Z variances
+  if (two_d_mode_) {
+    // Positions/velocities fixed on plane
+    odom.pose.pose.position.z = 0.0;
+    odom.twist.twist.linear.z = 0.0;
+
+    // Zero cross-cov terms with Z and inflate Z variance (6x6 layout)
+    const double huge = 1.0e12;
+    // pose covariance indices involving Z (x-z, y-z and symmetric)
+    odom.pose.covariance[2] = 0.0;   // (0,2)
+    odom.pose.covariance[8] = 0.0;   // (1,2)
+    odom.pose.covariance[12] = 0.0;  // (2,0)
+    odom.pose.covariance[13] = 0.0;  // (2,1)
+    odom.pose.covariance[14] = huge; // (2,2)
+    // twist covariance indices involving Z
+    odom.twist.covariance[2] = 0.0;   // (0,2)
+    odom.twist.covariance[8] = 0.0;   // (1,2)
+    odom.twist.covariance[12] = 0.0;  // (2,0)
+    odom.twist.covariance[13] = 0.0;  // (2,1)
+    odom.twist.covariance[14] = huge; // (2,2)
+  }
   
   // 각속도 공분산은 IMU 원본 사용 (EKF에서 추정하지 않음)
   if (latest_imu_.angular_velocity_covariance[0] > 0) {
@@ -1045,9 +1100,9 @@ void EkfFusionNode::publishOdometry() {
     odom.twist.twist.linear.y * odom.twist.twist.linear.y);
   
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000, 
-                      "Published odometry: pos=[%.2f, %.2f, %.2f], heading=%.2f deg, speed=%.2f m/s", 
+                      "Published odometry: pos=[%.2f, %.2f, %.2f], yaw_enu=%.2f deg, speed=%.2f m/s", 
                       odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z,
-                      heading * 180.0 / M_PI, current_speed);
+                      yaw_enu * 180.0 / M_PI, current_speed);
 
   geometry_msgs::msg::PoseStamped pose;
   pose.header = odom.header;
@@ -1084,8 +1139,9 @@ void EkfFusionNode::publishTransform() {
     latest_gnss_vel_.twist.twist.linear.x * latest_gnss_vel_.twist.twist.linear.x +
     latest_gnss_vel_.twist.twist.linear.y * latest_gnss_vel_.twist.twist.linear.y);
   
-  // 항상 EKF 추정 헤딩 사용
+  // Convert EKF NED heading to ENU yaw for TF
   heading = ekf_->getHeading_rad();
+  double yaw_enu = M_PI / 2.0 - heading;
 
   // NaN 방지를 위해 roll, pitch, heading 값 확인 (안전장치로 유지)
   if (std::isnan(roll) || std::isnan(pitch) || std::isnan(heading)) {
@@ -1094,7 +1150,7 @@ void EkfFusionNode::publishTransform() {
   }
   
   tf2::Quaternion q;
-  q.setRPY(roll, pitch, heading);
+  q.setRPY(roll, pitch, yaw_enu);
   
   geometry_msgs::msg::TransformStamped transform;
   transform.header.stamp = now;
@@ -1116,7 +1172,7 @@ void EkfFusionNode::publishTransform() {
   // 로컬 좌표계로 변환 (원점 기준)
   transform.transform.translation.x = ekf_utm.easting - origin_utm_x_;
   transform.transform.translation.y = ekf_utm.northing - origin_utm_y_;
-  transform.transform.translation.z = ekf_alt_m - reference_altitude_; 
+  transform.transform.translation.z = two_d_mode_ ? 0.0 : (ekf_alt_m - reference_altitude_);
   
   transform.transform.rotation.w = q.w();
   transform.transform.rotation.x = q.x();

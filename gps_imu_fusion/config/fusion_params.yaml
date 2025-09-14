@@ -1,5 +1,7 @@
 ekf_fusion_node:
   ros__parameters:
+    # 2D 평면 모드: Z 무시 (z, v_z, a_z 모두 무효화)
+    two_d_mode: true
     # 프레임 ID 설정
     world_frame_id: "odom"
     base_frame_id: "base_link"
@@ -117,7 +119,7 @@ ekf_fusion_node:
     # 전환 구간에서 "오직 GPS heading으로만 yaw 업데이트"
     
     # [상태 3: 주행 (> 1.0 m/s)]
-    gps_heading_noise_high: 0.1      # 주행 상태 - GPS/IMU 균형 융합
+    gps_heading_noise_high: 0.01      # 주행 상태 - GPS/IMU 균형 융합
     # 0.1 rad = 약 5.7도 표준편차
     # 고속에서 GPS와 IMU를 균형있게 융합
     # 동적 움직임에서 양 센서의 장점 활용

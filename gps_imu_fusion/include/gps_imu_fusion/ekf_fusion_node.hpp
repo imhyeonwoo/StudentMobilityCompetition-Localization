@@ -104,6 +104,7 @@ private:
   double zupt_gyro_threshold_;
   double zupt_accel_threshold_;
   double reference_altitude_;
+  bool two_d_mode_ = false;  // 2D 평면 모드: Z 완전 무시
   
   bool origin_set_ = false;
   double origin_utm_x_ = 0.0;
