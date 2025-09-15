@@ -216,4 +216,9 @@ Below are sample outputs from `imu_analysis/outputs` (clickable in most IDEs):
 
 ## License
 
-Each package defines its license in its own `package.xml` (e.g., MIT or Apache‑2.0). See individual packages for details.
+Per‑package licenses are provided alongside each package:
+- `gps_imu_fusion_ihw/LICENSE`: MIT (© 2025 imhyeonwoo)
+- `gps_imu_fusion/LICENSE`: MIT (© 2025 imhyeonwoo)
+- `imu_preprocess/LICENSE`: Apache‑2.0 (© 2025 imhyeonwoo)
+
+See also `LICENSES.md` for a short workspace‑level summary.
