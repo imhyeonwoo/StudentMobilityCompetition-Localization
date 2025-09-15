@@ -1,148 +1,188 @@
-# GPS and IMU Sensor Fusion
+# Localization Workspace (ROS 2) — GPS/IMU Fusion, Preprocess, Analysis
 
-ROS 2 package that fuses **GPS (7 Hz)** and **IMU (100 Hz)** using an Extended Kalman Filter (EKF) to output:
+This workspace contains a small, modular localization stack for fusing GNSS and IMU, plus utilities for IMU preprocessing and offline analysis. The GUI package is excluded from this README by request.
 
-| Topic              | Type                  | Freq   | Description                                         |
-|--------------------|-----------------------|--------|-----------------------------------------------------|
-| `/odometry/fusion` | `nav_msgs/Odometry`   | 100 Hz | x [m], y [m], ψ [rad], vₓ, vᵧ, ω_z                |
-| `/global_yaw`      | `std_msgs/Float32`    | 100 Hz | ψ (wrapped –π ~ π)                                  |
-| `(TF)`             | `reference → gps_antenna` | 100 Hz | same pose as odometry                          |
-
----
-
-## Installation
-
-Clone the repo and build:
-
-```bash
-git clone https://github.com/yourname/gps_imu_fusion_ihw.git
-cd gps_imu_fusion_ihw
-colcon build --packages-select gps_imu_fusion_ihw
-source install/setup.bash
-```
+Packages covered here:
+- `imu_preprocess`: IMU bias removal and low‑pass filtering node
+- `gps_imu_fusion`: Full EKF fusion stack (GNSS + IMU) with TF and utilities
+- `gps_imu_fusion_ihw`: Lightweight EKF fusion (position + velocity + yaw)
+- `imu_analysis`: MATLAB scripts for offline IMU QA, bias estimation, and LPF selection
 
 ---
 
-## Launch
+## Quick Start
 
-Launch with a YAML config:
+- Build (skip GUI):
+  - `colcon build --packages-skip gui`
+  - `source install/setup.bash`
 
-```bash
-ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py
-```
-
----
-
-## 1. Architecture
-
-```
-   /ouster/imu (100 Hz)         /ublox_gps_node/fix (7 Hz)
-          │                             │
-   ┌──────▼──────┐                ┌─────▼─────┐
-   │  QoS: Best  │  predict()     │  local_xy │  update()
-   │   IMU sub   │────────────▶   │   GPS     │──────────┐
-   └─────────────┘                └───────────┘          │
-               ┌────────────────────────────┐            │
-               │      KalmanFilter          │<───────────┘
-               └─────────┬────────┬─────────┘
-                         │        │
-              /odometry/fusion  /global_yaw
-```
-
-### 1.1 State Vector
-
-$$
-\mathbf{x} = \begin{bmatrix}
-x \\
-y \\
-\psi \\
-v_x \\
-v_y \\
-\omega_z
-\end{bmatrix}
-$$
-
-### 1.2 Prediction (see “Prediction Step” pdf)
-
-* Constant‑velocity model (`A`, Δt)
-* IMU accelerations + yaw‑rate as control (`B u`)
-* Process‑noise `Q = B Σ Bᵀ`, where Σ = diag(σₐ², σₐ², σ_ω²)
-
-### 1.3 Update (GPS position only)
-
-* `H` selects x,y rows
-* GPS covariance `R = gps_cov·I₂`
-* Standard EKF equations (Kalman Gain `K`, residual `y`)
-
-Angle ψ is wrapped each step:
-
-```cpp
-psi = atan2(sin(psi), cos(psi));
-```
+- Typical pipeline (two variants):
+  - Variant A — `imu_preprocess` → `gps_imu_fusion` EKF
+    - `ros2 launch imu_preprocess imu_preprocess.launch.py`
+    - `ros2 launch gps_imu_fusion ekf_fusion.launch.py`
+  - Variant B — `gps_imu_fusion_ihw` minimal EKF (directly uses IMU + local XY)
+    - `ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py`
 
 ---
 
-## 2. Code Walk‑Through
+## Package Overview
 
-```
-include/gps_imu_fusion_ihw/kalman_filter.hpp     <-- core EKF class  
-src/kalman_filter.cpp                           <-- math  
-src/sensor_fusion_node.cpp                      <-- ROS2 node & QoS  
-config/gps_imu_fusion.yaml                      <-- parameters  
-launch/gps_imu_fusion_launch.py                 <-- launch file
-```
+### imu_preprocess
 
-### 2.1 Important snippets
+- Purpose: Clean raw IMU by removing static bias and attenuating high‑frequency noise with a first‑order IIR low‑pass filter.
+- I/O:
+  - Subscribes: `/imu/data` (`sensor_msgs/Imu`)
+  - Publishes: `/imu/processed` (`sensor_msgs/Imu`)
+- Key parameters (`imu_preprocess/config/imu_bias.yaml`):
+  - `use_precalibrated_bias` (bool): if true, use the provided `bias_acc_*`, `bias_gyro_*`
+  - `bias_acc_x|y|z`, `bias_gyro_x|y|z`: static biases
+  - `lpf_cutoff` (Hz): 0 disables LPF; lower → smoother
+  - `remove_gravity` (bool), `gravity_magnitude`
+  - If runtime calibration is desired, use a config that sets `use_precalibrated_bias: false` and `calib_duration` (s)
+- Launch: `ros2 launch imu_preprocess imu_preprocess.launch.py [config:=imu_bias.yaml]`
+- Notes: Designed to precede the EKF. Keep IMU QoS as `SensorDataQoS` when remapping sources.
 
-```cpp
-/* QoS so we actually receive Ouster IMU (BestEffort) */
-auto imu_qos = rclcpp::SensorDataQoS();
-sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
-    "/ouster/imu", imu_qos, ...);
+### gps_imu_fusion
 
-/* ψ wrap after predict / update */
-x_(4) = std::atan2(std::sin(x_(4)), std::cos(x_(4)));
-```
+- Purpose: Full‑featured EKF that fuses GNSS position/velocity and processed IMU to publish odometry and TF. Includes geographic conversions (GeographicLib), ZUPT handling, heading options, lever‑arm compensation, and visualization helpers.
+- I/O (typical):
+  - Subscribes: `/ublox_gps_node/fix` (`sensor_msgs/NavSatFix`), `/ublox_gps_node/fix_velocity` (`geometry_msgs/TwistWithCovarianceStamped`), `/imu/processed` (`sensor_msgs/Imu`)
+  - Publishes: `/odom` (`nav_msgs/Odometry`), optional `TF` (`map → base_link`), and `nav_msgs/Path`
+- Config: `gps_imu_fusion/config/fusion_params.yaml` (extensive inline docs). Includes tuning for process/measurement noise, heading usage, ZUPT thresholds, lever‑arm limits, and 2D‑mode options.
+- Launch:
+  - `ros2 launch gps_imu_fusion ekf_fusion.launch.py`
+  - For a ready‑made vehicle profile + TF tree: `ros2 launch gps_imu_fusion ekf_fusion_nocheon.launch.py`
+- Utilities:
+  - `gps_imu_fusion/scripts/gps_vis/*`: quick CSV/bag visualization tools in RViz2
+  - `gps_imu_fusion/ekf_tuning_scripts/*`: Python helpers to analyze IMU noise/bias and generate EKF parameter presets
+- Build deps: Eigen3, GeographicLib, tf2, ROS 2 common message packages
+
+### gps_imu_fusion_ihw
+
+- Purpose: Compact EKF that estimates `[x, y, vx, vy, yaw]` and outputs odometry, yaw, and optional TF. Uses body‑frame accelerations and yaw‑rate as control input; GPS provides x/y updates.
+- I/O:
+  - Subscribes: `/ouster/imu` (`sensor_msgs/Imu`), `/local_xy` (`geometry_msgs/PointStamped`)
+  - Publishes: `/odometry/fusion` (`nav_msgs/Odometry`), `/global_yaw` (`std_msgs/Float32`), optional `TF` (`map → base`)
+- Config: `gps_imu_fusion_ihw/config/gps_imu_fusion.yaml`
+  - `sigma_a`, `sigma_omega` → process noise; `gps_cov` → measurement noise; `dt_default`; `map_frame`, `base_frame`, `publish_tf`
+- Launch: `ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py`
+- Notes: Best for lightweight setups where gyro bias is small or already handled in preprocessing.
+
+### imu_analysis (offline, MATLAB)
+
+- Purpose: End‑to‑end, offline IMU QA pipeline on a ROS 2 bag folder to quantify gyro bias and pick LPF cutoffs.
+- Steps (run in `imu_analysis/matlab`):
+  - `step01_load_imu_bag.m`: read `../imu_analysis_bag` (`/imu/data`) → save `../outputs/imu_raw.mat`
+  - `step02_qc_overview.m`: overview plots and basic stats
+  - `step03_estimate_gyro_bias.m`: estimate static gyro bias
+  - `step04_remove_gyro_bias.m`: apply bias removal and visualize impact
+  - `step05_acc_fft.m`: FFT/PSD to study accelerometer noise vs cutoff
+  - `step06_export_summary.m`: write `06_summary.csv` and `06_summary.txt` with suggested LPF settings
+- Output examples are in `imu_analysis/outputs/`
+
+#### IMU Analysis Gallery
+
+Below are sample outputs from `imu_analysis/outputs` (clickable in most IDEs):
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="imu_analysis/outputs/03_gyro_bias_hist.png" width="60%"/><br>
+      <b>1. Gyro Bias Histogram (static)</b>
+    </td>
+    <td align="center">
+      <img src="imu_analysis/outputs/03_static_window.png" width="60%"/><br>
+      <b>2. Static Window Detection</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="imu_analysis/outputs/04_gyro_bias_removal.png" width="60%"/><br>
+      <b>3. Bias Removal Effect (before→after)</b>
+    </td>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_fft_acc_selected.png" width="60%"/><br>
+      <b>4. Accelerometer FFT (selected)</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_fft_xy.png" width="60%"/><br>
+      <b>5. FFT Comparison (X vs Y)</b>
+    </td>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_lpf_acc_timeseries.png" width="60%"/><br>
+      <b>6. LPF Timeseries (acc, all axes)</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_lpf_xy_timeseries.png" width="60%"/><br>
+      <b>7. LPF Timeseries (X/Y focus)</b>
+    </td>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_psd_ax.png" width="60%"/><br>
+      <b>8. PSD ax (Welch)</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="imu_analysis/outputs/05_psd_ay.png" width="80%"/><br>
+      <b>9. PSD ay (Welch)</b>
+    </td>
+    <td align="center">
+      <img src="imu_analysis/outputs/06_rms_bar.png" width="60%"/><br>
+      <b>10. RMS Improvement (before vs after)</b>
+    </td>
+  </tr>
+  
+</table>
 
 ---
 
-## 3. Parameters
+## End‑to‑End Usage
 
-| YAML key      | Default     | Unit     | Matrix / Role         | 효과                                              | 튜닝 요령 |
-|---------------|-------------|----------|------------------------|---------------------------------------------------|-----------|
-| `sigma_a`     | **0.25**    | m/s²     | `Q` linear‑acc         | ↑ → GPS 의존 ↑, 진동 ↓ / 지연 ↑                  | 주행 중 위치 **치우침**, 느린 반응 → ↓ |
-| `sigma_omega` | **0.03**    | rad/s    | `Q` yaw‑rate           | ↑ → GPS 헤딩 의존 ↑, ↓ → IMU 적분 ↑ (드리프트)   | 정지 시 ψ 드리프트 ↗ → ↑ |
-| `gps_cov`     | **0.000196**| m²       | `R` (measurement)      | ↑ → GPS를 덜 믿음                                | GPS 수신 불량(도심 캐니언 등) 시 ↑ |
-| `dt_default`  | 0.01        | s        | Δt fallback            | IMU 타임스탬프 jump 보호                          | 그대로 |
-| `map_frame`   | "reference" | –        | TF parent              | –                                                 | 현장 좌표계에 맞춰 변경 |
-| `base_frame`  | "gps_antenna"| –       | TF child               | –                                                 | 센서 위치명 |
-| `publish_tf`  | true        | bool     | –                      | TF on/off                                         | RViz TF 겹칠 때 false |
-
-> `P₀` (초기 공분산)는 코드에 고정: **diag(1 m, 1 m, 0.4 m/s, 0.4 m/s, 0.1 rad)**. 필요 시 `setInitialState()` 수정.
+- Preprocess → EKF (recommended):
+  - Start IMU preprocessing:
+    - `ros2 launch imu_preprocess imu_preprocess.launch.py config:=imu_bias.yaml`
+  - Run the EKF (choose one):
+    - Full stack: `ros2 launch gps_imu_fusion ekf_fusion.launch.py`
+    - Minimal: `ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py`
+- Bag playback tips:
+  - Use `--clock`/`use_sim_time:=true` if launching alongside `ros2 bag play`
+  - Ensure topic names match your source; adjust remappings in launch files as needed
 
 ---
 
-## 4. Practical Tuning Workflow
+## Requirements
 
-1. **로그 재생** (rosbag / recorded ros2 bag)
-2. `rqt_plot`: `/global_yaw` vs GPS‑only yaw → 드리프트/지연 확인
-3. 조정 loop
-   * **Yaw 느림** → `sigma_omega` ↓
-   * **Yaw 흔들림** → `sigma_omega` ↑
-   * **위치 바운스** → `sigma_a` ↑
-   * **위치 둔함** → `sigma_a` ↓
-   * **GPS 튐** → `gps_cov` ↑  
-   → 반복
+- ROS 2 (rclcpp, tf2, common messages)
+- Eigen3
+- GeographicLib (for `gps_imu_fusion`)
+- MATLAB R2021b+ (optional, for `imu_analysis`)
 
 ---
 
-## 5. Launch & Runtime Hints
+## Repository Layout
 
-```bash
-ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py
+- `imu_preprocess/`: C++ node, `launch/imu_preprocess.launch.py`, `config/imu_bias.yaml`
+- `gps_imu_fusion/`: EKF node, `config/fusion_params.yaml`, `launch/ekf_fusion*.launch.py`, scripts and docs
+- `gps_imu_fusion_ihw/`: compact EKF implementation, `config/gps_imu_fusion.yaml`, `launch/gps_imu_fusion_launch.py`
+- `imu_analysis/`: MATLAB pipeline (`matlab/*.m`) and sample outputs
 
-# runtime param tweak
-ros2 param set /gps_imu_sensor_fusion sigma_omega 0.045
-ros2 param get /gps_imu_sensor_fusion gps_cov
-```
+---
 
+## Notes and Tuning Pointers
+
+- IMU preprocessing greatly stabilizes EKF behavior; verify bias on a static segment and pick LPF cutoffs using `imu_analysis`.
+- For `gps_imu_fusion_ihw`, start with `sigma_a ≈ 0.25`, `sigma_omega ≈ 0.03`, `gps_cov ≈ 2e‑4` and adjust:
+  - Increase `sigma_omega` if yaw drifts less with frequent GPS corrections
+  - Increase `sigma_a` to reduce position zig‑zag at the cost of responsiveness
+  - Increase `gps_cov` in urban canyon/poor GNSS; decrease for RTK‑grade data
+- In `gps_imu_fusion`, prefer using `/imu/processed` and leverage lever‑arm and ZUPT options when the platform frequently stops.
+
+---
+
+## License
+
+Each package defines its license in its own `package.xml` (e.g., MIT or Apache‑2.0). See individual packages for details.
