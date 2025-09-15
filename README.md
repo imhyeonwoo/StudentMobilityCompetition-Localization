@@ -42,6 +42,37 @@ Packages covered here:
 - Launch: `ros2 launch imu_preprocess imu_preprocess.launch.py [config:=imu_bias.yaml]`
 - Notes: Designed to precede the EKF. Keep IMU QoS as `SensorDataQoS` when remapping sources.
 
+### gps_imu_fusion_ihw (Complementary Yaw — Main)
+
+- Purpose: Lightweight localization with a focus on robust global yaw from a complementary filter. Includes:
+  - `global_yaw_complementary_node` (primary): IMU yaw-rate integration corrected by GPS-derived yaw
+  - `global_yaw_integrator_node`: pure integration baseline without GPS correction
+  - `sensor_fusion_node` + `kalman_filter`: compact 5‑state EKF for x, y, vx, vy, yaw using body accelerations and yaw‑rate
+  - `current_speed_node`: helper for speed estimation
+- Yaw algorithm (complementary):
+  - Initialize yaw from recent GPS displacement direction once moved beyond a distance threshold
+  - Integrate IMU `ω_z` per message: `psi ← wrap(psi + ω_z·Δt)`
+  - When GPS yaw is fresh and speed is above `v_min`, correct with small gain: `psi ← wrap(psi + k_corr·wrap(psi_gps − psi))`
+  - Angle wrapping with `atan2(sin, cos)` keeps yaw in [–π, π)
+- I/O:
+  - Subscribes: `/imu/processed` (`sensor_msgs/Imu`), `/local_xy` (`geometry_msgs/PointStamped`) for yaw nodes; `/ouster/imu` + `/local_xy` for minimal EKF
+  - Publishes: `/global_yaw` (`std_msgs/Float32`) from yaw nodes, `/odometry/fusion` (`nav_msgs/Odometry`) and optional TF from the EKF node
+- Key parameters (yaw, typical):
+  - `k_corr` (0.01–0.05): GPS correction gain
+  - `gps_timeout` (~1.5× GPS period): ignore stale GPS yaw
+  - `v_min` (m/s): minimum speed to trust GPS yaw
+  - `dist_min` (m): minimum traveled distance before using GPS to initialize yaw
+- Launch examples:
+  - Complementary yaw (recommended):
+    - `ros2 run gps_imu_fusion_ihw global_yaw_complementary_node`
+  - Integrator baseline:
+    - `ros2 run gps_imu_fusion_ihw global_yaw_integrator_node`
+  - Minimal EKF (x,y,vx,vy,yaw):
+    - `ros2 launch gps_imu_fusion_ihw gps_imu_fusion_launch.py`
+- Tips:
+  - Prefer `/imu/processed` from `imu_preprocess` to reduce drift and improve yaw stability.
+  - Tune `k_corr` up for more aggressive GPS correction; reduce if GPS noise causes jitter.
+
 ### gps_imu_fusion
 
 - Purpose: Full‑featured EKF that fuses GNSS position/velocity and processed IMU to publish odometry and TF. Includes geographic conversions (GeographicLib), ZUPT handling, heading options, lever‑arm compensation, and visualization helpers.
